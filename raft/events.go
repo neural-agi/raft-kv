@@ -8,7 +8,10 @@ type nodeEvent interface {
 
 type stopEvent struct{}
 
-func (stopEvent) handle(_ *runtimeState) bool { return true }
+func (stopEvent) handle(s *runtimeState) bool {
+	s.completeAllProposals(ErrProposalStopped)
+	return true
+}
 
 type electionTimeoutEvent struct{}
 

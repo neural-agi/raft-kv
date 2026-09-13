@@ -25,6 +25,9 @@ type runtimeState struct {
 	votedReplies       map[NodeID]struct{}
 	resetElectionTimer bool
 	random             *rand.Rand
+
+	proposals    map[LogIndex]*proposalWaiter
+	applyResults map[LogIndex][]byte
 }
 
 func newRuntimeState(node *Node, config Config, persistent PersistentState) (*runtimeState, error) {
@@ -36,7 +39,16 @@ func newRuntimeState(node *Node, config Config, persistent PersistentState) (*ru
 	if err != nil {
 		return nil, err
 	}
-	return &runtimeState{node: node, config: config, persistent: clonePersistentState(persistent), log: log, role: Follower, random: rng}, nil
+	return &runtimeState{
+		node:         node,
+		config:       config,
+		persistent:   clonePersistentState(persistent),
+		log:          log,
+		role:         Follower,
+		random:       rng,
+		proposals:    make(map[LogIndex]*proposalWaiter),
+		applyResults: make(map[LogIndex][]byte),
+	}, nil
 }
 
 func (s *runtimeState) nextElectionTimeout() time.Duration {
@@ -132,6 +144,7 @@ func (s *runtimeState) handleVoteRequest(request RequestVoteArgs) RequestVoteRep
 		s.persistent = candidate
 		s.role = Follower
 		s.leaderID = ""
+		s.invalidateLostProposals()
 		s.resetElectionTimer = true
 		reply.VoteGranted = true
 	}
@@ -151,6 +164,7 @@ func (s *runtimeState) updateTerm(term Term) error {
 	s.persistent = candidate
 	s.role = Follower
 	s.leaderID = ""
+	s.invalidateLostProposals()
 	s.electionTerm = 0
 	s.votes = nil
 	s.votedReplies = nil

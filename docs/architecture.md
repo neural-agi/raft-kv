@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-The implementation covers lifecycle, leader election, RequestVote, AppendEntries, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, and deterministic in-memory KV state-machine application. Client proposals remain deferred.
+The implementation covers lifecycle, leader election, RequestVote, AppendEntries, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, deterministic in-memory KV state-machine application, and the in-process client write path through NodeAPI.Propose.
 
 ## Package boundaries
 
@@ -31,7 +31,7 @@ One Raft event loop owns all mutable protocol state:
 - `commitIndex` and `lastApplied`;
 - election and heartbeat timer state;
 - leader `nextIndex` and `matchIndex`;
-- election vote tracking, replication decisions, and application ordering.
+- election vote tracking, replication decisions, application ordering, and proposal waiter completion.
 
 RPC handlers enqueue immutable request events. Transport calls run outside the loop and enqueue immutable response events. The event loop alone advances `lastApplied` and invokes `StateMachine.Apply`. The KV map is not concurrently mutated by multiple apply calls.
 
@@ -91,12 +91,18 @@ Lengths are big-endian uint32 values. PUT requires a non-empty key and a value, 
 
 State-machine application is not included in Raft persistent state. A future restart/recovery design must explicitly rebuild the in-memory state machine from committed log entries before exposing reads.
 
+## Proposal flow
+
+`NodeAPI.Propose` accepts copied opaque command bytes only on a leader. The event loop appends and persists the entry, reuses AppendEntries replication, and completes an event-loop-owned waiter only after the exact `(index, term)` entry is committed and successfully applied. Apply results are retained by log index, so concurrent proposals cannot exchange results.
+
+Follower and candidate proposals return `ErrCodeNotLeader` with the best-known leader when available. Caller cancellation detaches the caller but does not remove an accepted log entry. Pending waiters terminate with `ErrProposalStopped` on node shutdown or `ErrProposalLost` if conflicting history removes their exact entry. There are no exactly-once client semantics.
+
 ## Deferred behavior
 
-Not implemented in V3:
+Not implemented in V4:
 
-- `Propose` and client submission;
-- PUT/DELETE client protocol and CLI behavior;
+- automatic proposal forwarding or a networked client protocol;
+- real TCP/HTTP/gRPC client protocol or CLI networking;
 - real TCP/HTTP/gRPC networking;
 - filesystem WAL;
 - snapshots and compaction;

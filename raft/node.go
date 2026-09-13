@@ -193,6 +193,9 @@ func (n *Node) run() {
 	state, err := newRuntimeState(n, n.config, n.state)
 	if err != nil {
 		close(n.done)
+		n.mu.Lock()
+		n.lifecycle = Stopped
+		n.mu.Unlock()
 		return
 	}
 	electionTimer := time.NewTimer(state.nextElectionTimeout())

@@ -60,6 +60,7 @@ func (s *runtimeState) handleAppendEntries(request AppendEntriesArgs) AppendEntr
 	if request.Term == s.persistent.CurrentTerm {
 		if s.role != Follower {
 			s.role = Follower
+			s.invalidateLostProposals()
 			s.electionTerm = 0
 			s.votes = nil
 			s.votedReplies = nil
@@ -101,6 +102,7 @@ func (s *runtimeState) handleAppendEntries(request AppendEntriesArgs) AppendEntr
 		}
 		s.log = candidateLog
 		s.persistent = state
+		s.invalidateLostProposals()
 	}
 	if request.LeaderCommit > s.commitIndex {
 		s.commitIndex = minIndex(request.LeaderCommit, s.log.lastIndex())

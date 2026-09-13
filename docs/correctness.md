@@ -17,8 +17,20 @@ This document classifies the current election, replication, commitment, and KV s
 | State Machine Safety | Not yet established end-to-end | Local application ordering is tested, but no multi-node applied-state/failover proof exists yet |
 | Persistence ordering | Both | Term/vote/log saves precede successful acknowledgments; injected failures |
 | Timer ownership | Both | Event-loop timers and heartbeat-loss tests |
-| Shutdown safety | Both | Stop waits for loop exit; late completion test |
+| Shutdown safety | Both | Stop waits for loop exit and completes buffered proposal waiters; late completion tests |
 | KV command determinism | Both | Binary encoding round trips, malformed-input rejection, store tests |
+| Proposal completion safety | Both | Event-loop-owned exact index/term waiters; leader/follower, concurrent, cancellation, and shutdown tests |
+| Proposal result correlation | Both | Apply results retained by log index and concurrent proposal tests |
+| Proposal cancellation semantics | Both | Cancellation detaches caller without deleting accepted log entry; cancellation tests |
+| Proposal failover/replacement semantics | Enforced but not fully tested | Exact `(index, term)` identity is checked and replacement terminates the waiter; full failover proposal scenario remains future work |
+| Proposal index uniqueness | Both | Event-loop serialization assigns each accepted append from the current last index; concurrent proposal tests |
+| Proposal completion requires commitment | Both | Completion checks `index <= commitIndex`; local append alone is insufficient |
+| Proposal completion requires application | Both | Completion checks `index <= lastApplied` and an exact apply result; Apply-failure tests |
+| Proposal cancellation semantics | Both | Cancellation detaches the caller and accepted log entries remain |
+| Shutdown safety | Both | Stop completes all event-loop-owned waiters with a buffered result channel |
+| Applied bound | Both | Apply loop advances only while `lastApplied < commitIndex`; V3/V4 tests |
+| Failover proposal safety | Not established | No complete deterministic failover proposal suite yet |
+| Restart recovery | Not established | No production durable backend or restart replay exists |
 
 ## Raft application invariant
 
@@ -60,13 +72,19 @@ The in-memory store is expected to be called by the Raft event loop for replicat
 - **Timer ownership — both:** timer work is processed by the event loop.
 - **Persistence ordering — both:** injected failures do not produce successful durable transitions.
 
-Full Leader Completeness and State Machine Safety across failover/restart remain not yet established end-to-end. GET also remains a local non-linearizable read.
+Full Leader Completeness and State Machine Safety across failover/restart remain not yet established end-to-end. Proposal success is local to the exact committed/applied entry and does not establish linearizability or exactly-once client semantics. GET also remains a local non-linearizable read.
+
+## V4 proposal audit status
+
+The proposal path is event-loop-owned from request acceptance through waiter completion. A successful result requires the exact entry to be committed, applied, and associated with a retained result by log index. A caller cancellation does not undo an accepted command. A conflicting replacement produces `ErrProposalLost`; node shutdown produces `ErrProposalStopped`. Higher-term and same-term leader step-down paths invalidate only waiters whose exact entries are no longer present with the original term.
+
+The following remain deliberately unestablished: complete proposal behavior across a leadership failover, restart/replay recovery, and full multi-node State Machine Safety. The current tests validate local ordering, exact result correlation, malformed-command failure, cancellation, shutdown, and the three-node happy path, but these are not mathematical proofs.
 
 ## Scope exclusions
 
-V3 does not implement or claim:
+V4 does not implement or claim:
 
-- client proposals;
+- networked client protocol or automatic proposal forwarding;
 - client protocol or CLI KV commands;
 - real networking;
 - WAL or filesystem KV persistence;
