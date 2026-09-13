@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-The implementation covers lifecycle, leader election, RequestVote, AppendEntries, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, deterministic in-memory KV state-machine application, and the in-process client write path through NodeAPI.Propose.
+The implementation covers lifecycle, leader election, RequestVote, AppendEntries, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, deterministic in-memory KV state-machine application, the in-process client write path through NodeAPI.Propose, and V5.1 filesystem persistence of complete Raft state. Restart/recovery remains V5.2.
 
 ## Package boundaries
 
@@ -12,7 +12,7 @@ cmd/client       process wiring (later)
 cluster          static member identity and configuration
 raft             lifecycle, event loop, elections, log, replication, commitment, apply ordering
 transport        production delivery adapter (not implemented)
-storage          production Raft durable adapter (not implemented)
+storage          filesystem-backed complete PersistentState storage (V5.1); WAL not implemented
 kv               binary commands and in-memory state machine
 fault            future test-only fault controls
 integration      future end-to-end tests
@@ -43,7 +43,7 @@ A node moves through:
 Created -> Initialized -> Running -> Stopped
 ```
 
-Initialization loads and validates the complete Raft persistent state. The state-machine object is supplied during construction; its contents are in-memory and are not part of Raft persistent storage in V3.
+Initialization loads and validates the complete Raft persistent state through the Storage interface. V5.1 provides an atomic filesystem implementation for that state. The state-machine object is supplied during construction; KV contents remain in memory and are not part of Raft persistent storage.
 
 ## Replication and application flow
 
@@ -97,12 +97,17 @@ State-machine application is not included in Raft persistent state. A future res
 
 Follower and candidate proposals return `ErrCodeNotLeader` with the best-known leader when available. Caller cancellation detaches the caller but does not remove an accepted log entry. Pending waiters terminate with `ErrProposalStopped` on node shutdown or `ErrProposalLost` if conflicting history removes their exact entry. There are no exactly-once client semantics.
 
+## Persistent storage boundary
+
+`Storage.Load` returns an independent complete `PersistentState`, or an error for missing/corrupt data other than a fresh zero state when the file does not yet exist. `Storage.Save` encodes the complete state as a versioned binary file, writes and syncs a temporary sibling, atomically renames it, and syncs the parent directory before reporting success. A failed replacement leaves the previous live file intact.
+
+V5.1 persists only `currentTerm`, `votedFor`, and the complete Raft log. It does not persist KV state, commit indexes, applied indexes, or proposal waiters. Restart orchestration and replay are future work.
+
 ## Deferred behavior
 
-Not implemented in V4:
+Not implemented in V5.1:
 
 - automatic proposal forwarding or a networked client protocol;
-- real TCP/HTTP/gRPC client protocol or CLI networking;
 - real TCP/HTTP/gRPC networking;
 - filesystem WAL;
 - snapshots and compaction;

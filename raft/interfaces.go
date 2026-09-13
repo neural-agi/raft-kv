@@ -10,9 +10,13 @@ type Transport interface {
 	AppendEntries(ctx context.Context, target NodeID, request AppendEntriesArgs) (AppendEntriesReply, error)
 }
 
-// Storage owns Raft's durable state. Save must durably store the complete
-// replacement before returning nil. Raft does not depend on whether an adapter
-// uses a WAL, files, or another local mechanism.
+// Storage owns Raft's durable state. Load returns a complete independent state
+// replacement, or an error for unreadable/invalid persisted data. A missing
+// uninitialized store returns the zero PersistentState. Save replaces the complete
+// state and must not return nil until the replacement has reached the adapter's
+// documented durability boundary. Implementations must not retain caller-owned
+// slices. Raft does not depend on whether an adapter uses files, a WAL, or another
+// local mechanism.
 type Storage interface {
 	Load(ctx context.Context) (PersistentState, error)
 	Save(ctx context.Context, state PersistentState) error

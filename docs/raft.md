@@ -67,6 +67,21 @@ Application remains event-loop-owned; no external goroutine mutates `lastApplied
 
 Follower and candidate calls return `ErrCodeNotLeader`. Cancellation affects only the waiting caller; accepted commands remain eligible to commit and apply. If conflicting history removes the exact entry, the waiter receives `ErrProposalLost`; stopping the node completes unresolved waiters with `ErrProposalStopped`. Concurrent proposals have independent event-loop-owned waiters. This API does not provide exactly-once client semantics.
 
+## Persistent Raft state
+
+The Storage contract persists the complete `PersistentState`: current term, voted-for identity, and the complete log. V5.1's `storage.FileStorage` uses a versioned binary representation:
+
+```text
+magic(2) | version(1) | reserved(1) |
+currentTerm(8) | votedForLength(4) | votedFor |
+logCount(4) |
+  repeated: term(8) | index(8) | commandLength(4) | command bytes
+```
+
+All integers are big-endian. The decoder requires exact lengths, validates version, log entry structure, contiguous indexes, and rejects trailing/corrupt data. A missing state file represents fresh zero state. Save writes and syncs a same-directory temporary file, renames it over the live file, then syncs the parent directory. The returned-success boundary is after these operations; platform/filesystem crash guarantees may vary.
+
+This is complete-state replacement storage, not a WAL. KV state, snapshots, compaction, and restart replay are not implemented.
+
 ## Existing replication behavior
 
 AppendEntries validates terms and previous-log matching, repairs conflicting suffixes atomically with respect to persistence, and advances follower commit index with a local-log bound. Leaders track `nextIndex`/`matchIndex` and commit only current-term entries replicated to a majority. These committed entries are now eligible for ordered state-machine application but are not submitted by a client proposal yet.
@@ -75,10 +90,12 @@ AppendEntries validates terms and previous-log matching, repairs conflicting suf
 
 Still out of scope:
 
+- WAL replay or segmented WAL;
+- restart orchestration and recovery integration;
+- durable KV state;
 - automatic proposal forwarding;
 - networked client protocol and CLI KV commands;
 - real TCP/HTTP/gRPC networking;
-- filesystem WAL;
 - snapshots and compaction;
 - ReadIndex and linearizable reads;
 - transactions, deduplication, and general fault injection.

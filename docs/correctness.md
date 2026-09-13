@@ -26,11 +26,18 @@ This document classifies the current election, replication, commitment, and KV s
 | Proposal index uniqueness | Both | Event-loop serialization assigns each accepted append from the current last index; concurrent proposal tests |
 | Proposal completion requires commitment | Both | Completion checks `index <= commitIndex`; local append alone is insufficient |
 | Proposal completion requires application | Both | Completion checks `index <= lastApplied` and an exact apply result; Apply-failure tests |
-| Proposal cancellation semantics | Both | Cancellation detaches the caller and accepted log entries remain |
-| Shutdown safety | Both | Stop completes all event-loop-owned waiters with a buffered result channel |
+
 | Applied bound | Both | Apply loop advances only while `lastApplied < commitIndex`; V3/V4 tests |
 | Failover proposal safety | Not established | No complete deterministic failover proposal suite yet |
-| Restart recovery | Not established | No production durable backend or restart replay exists |
+| Restart recovery | Not established | V5.1 can load a validated Raft state file, but restart orchestration, KV replay, and end-to-end recovery are not implemented |
+| Vote Persistence | Both | Vote changes publish only after Storage.Save succeeds; failure-injection tests |
+| Log Persistence | Both | Proposal/AppendEntries log changes publish only after Storage.Save succeeds; filesystem and in-memory tests |
+| Save Atomicity | Both | Temporary-file replacement and failed-rename preservation tests |
+| Load Validation | Both | Version, length, truncation, trailing-data, entry, and contiguous-index validation tests |
+| Persistent State Isolation | Both | FileStorage copies encoded/decoded buffers; aliasing tests |
+| Binary Command Preservation | Both | Length-prefixed binary command encoding and filesystem round-trip tests |
+| Crash Durability Boundary | Enforced by implementation | File sync, atomic rename, and parent-directory sync precede successful Save; crash recovery remains untested |
+| V5.1 filesystem storage | Both | Fresh, round-trip, corruption, failure, and atomicity tests |
 
 ## Raft application invariant
 
@@ -82,12 +89,14 @@ The following remain deliberately unestablished: complete proposal behavior acro
 
 ## Scope exclusions
 
-V4 does not implement or claim:
+V5.1 does not implement or claim:
 
 - networked client protocol or automatic proposal forwarding;
 - client protocol or CLI KV commands;
 - real networking;
-- WAL or filesystem KV persistence;
+- WAL replay or segmented WAL;
+- durable KV persistence;
+- restart orchestration or recovery integration;
 - snapshots;
 - ReadIndex;
 - linearizable reads;
