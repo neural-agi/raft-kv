@@ -14,7 +14,7 @@ raft             lifecycle, event loop, elections, log, replication, commitment,
 transport        production delivery adapter (not implemented)
 storage          filesystem-backed complete PersistentState storage (V5.1); WAL not implemented
 kv               binary commands and in-memory state machine
-fault            future test-only fault controls
+fault            deterministic test-only fault controls
 integration      future end-to-end tests
 docs             contracts and correctness argument
 ```
@@ -112,4 +112,4 @@ Not implemented in V5.1:
 - filesystem WAL;
 - snapshots and compaction;
 - ReadIndex or linearizable reads;
-- transactions, deduplication, or fault-injection framework.
+- transactions, deduplication, or production fault orchestration.

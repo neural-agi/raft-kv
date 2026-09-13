@@ -1,4 +1,4 @@
-# Correctness Audit and V3 Invariants
+# Correctness Audit and V6 Failure Evidence
 
 This document classifies the current election, replication, commitment, and KV state-machine behavior. Status labels are evidence-based and are not mathematical proofs.
 
@@ -48,7 +48,11 @@ This document classifies the current election, replication, commitment, and KV s
 | Restart Leadership Safety | Both | Restart always reconstructs as follower |
 | Restart Proposal Safety | Enforced by implementation | Proposal waiters are runtime-only and are not persisted |
 | Restart Log Safety | Both | Complete log survives process-independent reopen |
-| Failover + Restart Safety | Not established | Full multi-node failover/restart proof remains future work |
+| Failover + Restart Safety | Tested under selected deterministic failures | V6 exercises leader/follower stop, partitions, healing, and restart; this is not a proof of all schedules |
+| Fault-controller determinism | Enforced + tested | Explicit drop/error/delay/release/partition/heal controls and trace tests |
+| Failure observability | Enforced + tested | Structured fault trace and diagnostic invariant assertions |
+| Partition Safety | Tested under selected deterministic failures | Majority/minority and leader-isolation scenarios; arbitrary combinations remain unestablished |
+| Recovery under injected failure | Tested under selected deterministic failures | Restart, storage, transport, and Apply-failure boundaries are exercised selectively |
 
 ## Raft application invariant
 
@@ -98,9 +102,15 @@ The proposal path is event-loop-owned from request acceptance through waiter com
 
 The following remain deliberately unestablished: complete proposal behavior across a leadership failover, restart/replay recovery, and full multi-node State Machine Safety. The current tests validate local ordering, exact result correlation, malformed-command failure, cancellation, shutdown, and the three-node happy path, but these are not mathematical proofs.
 
+## V6 failure-testing evidence
+
+V6 adds deterministic, test-only fault injection. The controller can drop, error, or delay a selected RequestVote or AppendEntries edge, explicitly release delayed requests, partition/heal node pairs, and record injected faults. The transport remains an implementation of the unchanged `raft.Transport` interface; source identity is bound by the test network when constructing a sender transport.
+
+The failure tests establish selected evidence for leader/follower failure, partition healing, message delay/drop, storage errors, Apply retry, and restart during activity. A passing deterministic scenario is not a mathematical proof of the global Raft invariant under every schedule. Crash durability remains an implementation boundary, not an empirically proven power-loss result.
+
 ## Scope exclusions
 
-V5.2 does not implement or claim:
+V6 does not implement or claim:
 
 - networked client protocol or automatic proposal forwarding;
 - client protocol or CLI KV commands;

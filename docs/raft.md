@@ -97,4 +97,4 @@ Still out of scope:
 - real TCP/HTTP/gRPC networking;
 - snapshots and compaction;
 - ReadIndex and linearizable reads;
-- transactions, deduplication, and general fault injection.
+- transactions, deduplication, and production fault orchestration.
