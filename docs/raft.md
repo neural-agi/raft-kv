@@ -74,13 +74,13 @@ The Storage contract persists the complete `PersistentState`: current term, vote
 ```text
 magic(2) | version(1) | reserved(1) |
 currentTerm(8) | votedForLength(4) | votedFor |
-logCount(4) |
+logCount(4) | commitIndex(8) |
   repeated: term(8) | index(8) | commandLength(4) | command bytes
 ```
 
-All integers are big-endian. The decoder requires exact lengths, validates version, log entry structure, contiguous indexes, and rejects trailing/corrupt data. A missing state file represents fresh zero state. Save writes and syncs a same-directory temporary file, renames it over the live file, then syncs the parent directory. The returned-success boundary is after these operations; platform/filesystem crash guarantees may vary.
+All integers are big-endian. Version 2 includes the durable commit index; version 1 is intentionally rejected rather than silently reinterpreted. The decoder requires exact lengths, validates version, log entry structure, contiguous indexes, commitIndex <= log end, and rejects trailing/corrupt data. A missing state file represents fresh zero state. Save writes and syncs a same-directory temporary file, renames it over the live file, then syncs the parent directory. The returned-success boundary is after these operations; platform/filesystem crash guarantees may vary.
 
-This is complete-state replacement storage, not a WAL. KV state, snapshots, compaction, and restart replay are not implemented.
+This is complete-state replacement storage, not a WAL. `lastApplied` is not persisted. On restart, the node replays exactly the persisted committed prefix into a fresh in-memory state machine, sets `lastApplied == commitIndex`, and refuses initialization if replay fails. Entries beyond commitIndex remain in the log but are not applied.
 
 ## Existing replication behavior
 
@@ -91,8 +91,7 @@ AppendEntries validates terms and previous-log matching, repairs conflicting suf
 Still out of scope:
 
 - WAL replay or segmented WAL;
-- restart orchestration and recovery integration;
-- durable KV state;
+- durable KV files;
 - automatic proposal forwarding;
 - networked client protocol and CLI KV commands;
 - real TCP/HTTP/gRPC networking;

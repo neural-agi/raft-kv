@@ -43,9 +43,11 @@ func (e appendTestEntryEvent) handle(s *runtimeState) bool {
 		e.reply <- err
 		return false
 	}
-	s.persistent.Log = s.log.snapshot()
-	err := s.config.Storage.Save(context.Background(), clonePersistentState(s.persistent))
+	state := clonePersistentState(s.persistent)
+	state.Log = s.log.snapshot()
+	err := s.config.Storage.Save(context.Background(), state)
 	if err == nil {
+		s.persistent = state
 		s.matchIndex[s.config.ID] = s.log.lastIndex()
 		s.sendAppendEntries()
 	}

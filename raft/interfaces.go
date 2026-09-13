@@ -23,12 +23,14 @@ type Storage interface {
 }
 
 // PersistentState is exactly the Raft state required to survive a crash:
-// current term, current-term vote, and the replicated log. Commit/applied indexes
-// are intentionally not persisted by this MVP contract.
+// current term, current-term vote, the replicated log, and durable commit metadata.
+// CommitIndex identifies the committed prefix and must not exceed the log end.
+// LastApplied and all other runtime state remain reconstructible and volatile.
 type PersistentState struct {
 	CurrentTerm Term
 	VotedFor    NodeID
 	Log         []LogEntry
+	CommitIndex LogIndex
 }
 
 // StateMachine applies committed commands in log order. It must not be called for

@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	formatVersion byte = 1
+	formatVersion byte = 2
 	headerSize         = 4 // magic(2), version(1), reserved(1)
 	maxFieldSize       = uint64(^uint32(0))
 )
@@ -137,7 +137,7 @@ func (s *FileStorage) Save(ctx context.Context, state raft.PersistentState) erro
 }
 
 func encodeState(state raft.PersistentState) ([]byte, error) {
-	size := uint64(headerSize + 8 + 4 + 4 + len(state.VotedFor))
+	size := uint64(headerSize + 8 + 4 + 4 + 8 + len(state.VotedFor))
 	if uint64(len(state.VotedFor)) > maxFieldSize || uint64(len(state.Log)) > maxFieldSize {
 		return nil, errors.New("raft state field is too large")
 	}
@@ -162,6 +162,8 @@ func encodeState(state raft.PersistentState) ([]byte, error) {
 	pos := 16 + len(state.VotedFor)
 	putU32(data[pos:pos+4], uint32(len(state.Log)))
 	pos += 4
+	putU64(data[pos:pos+8], uint64(state.CommitIndex))
+	pos += 8
 	for _, entry := range state.Log {
 		putU64(data[pos:pos+8], uint64(entry.Term))
 		putU64(data[pos+8:pos+16], uint64(entry.Index))
@@ -192,6 +194,10 @@ func decodeState(data []byte) (raft.PersistentState, error) {
 	votedFor := string(append([]byte(nil), data[pos:pos+int(votedLen)]...))
 	pos += int(votedLen)
 	count, ok := readU32(data, &pos)
+	if !ok {
+		return raft.PersistentState{}, io.ErrUnexpectedEOF
+	}
+	commitIndex, ok := readU64(data, &pos)
 	if !ok {
 		return raft.PersistentState{}, io.ErrUnexpectedEOF
 	}
@@ -226,7 +232,10 @@ func decodeState(data []byte) (raft.PersistentState, error) {
 	if pos != len(data) {
 		return raft.PersistentState{}, errInvalidFormat
 	}
-	return raft.PersistentState{CurrentTerm: raft.Term(term), VotedFor: raft.NodeID(votedFor), Log: log}, nil
+	if commitIndex > uint64(len(log)) {
+		return raft.PersistentState{}, errors.New("persisted commit index exceeds log end")
+	}
+	return raft.PersistentState{CurrentTerm: raft.Term(term), VotedFor: raft.NodeID(votedFor), Log: log, CommitIndex: raft.LogIndex(commitIndex)}, nil
 }
 
 func putU32(dst []byte, value uint32) {

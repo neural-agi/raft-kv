@@ -14,6 +14,7 @@ func sampleState() raft.PersistentState {
 	return raft.PersistentState{
 		CurrentTerm: 7,
 		VotedFor:    "node-b",
+		CommitIndex: 1,
 		Log: []raft.LogEntry{
 			{Term: 3, Index: 1, Command: []byte{0, 1, 2, 255}},
 			{Term: 7, Index: 2, Command: []byte{}},
@@ -144,7 +145,7 @@ func TestEncodeRejectsInvalidLog(t *testing.T) {
 
 func assertStateEqual(t *testing.T, want, got raft.PersistentState) {
 	t.Helper()
-	if want.CurrentTerm != got.CurrentTerm || want.VotedFor != got.VotedFor || len(want.Log) != len(got.Log) {
+	if want.CurrentTerm != got.CurrentTerm || want.VotedFor != got.VotedFor || want.CommitIndex != got.CommitIndex || len(want.Log) != len(got.Log) {
 		t.Fatalf("states differ: want=%#v got=%#v", want, got)
 	}
 	for i := range want.Log {

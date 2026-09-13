@@ -45,6 +45,8 @@ func newRuntimeState(node *Node, config Config, persistent PersistentState) (*ru
 		persistent:   clonePersistentState(persistent),
 		log:          log,
 		role:         Follower,
+		commitIndex:  persistent.CommitIndex,
+		lastApplied:  persistent.CommitIndex,
 		random:       rng,
 		proposals:    make(map[LogIndex]*proposalWaiter),
 		applyResults: make(map[LogIndex][]byte),

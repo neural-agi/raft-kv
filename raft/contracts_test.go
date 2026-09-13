@@ -59,8 +59,8 @@ func TestRPCContractsExposeRequiredProtocolFields(t *testing.T) {
 }
 
 func TestPersistentStateContainsOnlyDurableRaftState(t *testing.T) {
-	state := PersistentState{CurrentTerm: 3, VotedFor: "node-a", Log: []LogEntry{{Term: 3, Index: 1}}}
-	if state.CurrentTerm != 3 || state.VotedFor != "node-a" || len(state.Log) != 1 {
+	state := PersistentState{CurrentTerm: 3, VotedFor: "node-a", Log: []LogEntry{{Term: 3, Index: 1}}, CommitIndex: 1}
+	if state.CurrentTerm != 3 || state.VotedFor != "node-a" || len(state.Log) != 1 || state.CommitIndex != 1 {
 		t.Fatalf("unexpected persistent state: %#v", state)
 	}
 }

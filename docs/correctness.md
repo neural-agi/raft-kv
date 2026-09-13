@@ -29,7 +29,7 @@ This document classifies the current election, replication, commitment, and KV s
 
 | Applied bound | Both | Apply loop advances only while `lastApplied < commitIndex`; V3/V4 tests |
 | Failover proposal safety | Not established | No complete deterministic failover proposal suite yet |
-| Restart recovery | Not established | V5.1 can load a validated Raft state file, but restart orchestration, KV replay, and end-to-end recovery are not implemented |
+| Restart recovery | Enforced and tested locally | V5.2 restores durable state and replays exactly the persisted committed prefix; broader failover/restart safety remains incomplete |
 | Vote Persistence | Both | Vote changes publish only after Storage.Save succeeds; failure-injection tests |
 | Log Persistence | Both | Proposal/AppendEntries log changes publish only after Storage.Save succeeds; filesystem and in-memory tests |
 | Save Atomicity | Both | Temporary-file replacement and failed-rename preservation tests |
@@ -38,6 +38,17 @@ This document classifies the current election, replication, commitment, and KV s
 | Binary Command Preservation | Both | Length-prefixed binary command encoding and filesystem round-trip tests |
 | Crash Durability Boundary | Enforced by implementation | File sync, atomic rename, and parent-directory sync precede successful Save; crash recovery remains untested |
 | V5.1 filesystem storage | Both | Fresh, round-trip, corruption, failure, and atomicity tests |
+| Persistent CommitIndex Safety | Both | CommitIndex is validated against log end and persisted before publication |
+| Commit Persistence Ordering | Both | Leader/follower commit advances use candidate Save before live publication; injected failure test |
+| Recovery State Reconstruction | Both | Fresh follower state, volatile-role reset, and committed-prefix replay tests |
+| LastApplied Recovery | Both | Successful recovery initializes `lastApplied == commitIndex` |
+| Committed State-Machine Replay | Both | Replay uses opaque log commands in index order |
+| Uncommitted Entry Non-Replay | Both | Durable suffix remains in the log but is excluded from recovery replay |
+| Recovery Failure Safety | Both | Apply failure during committed replay rejects initialization |
+| Restart Leadership Safety | Both | Restart always reconstructs as follower |
+| Restart Proposal Safety | Enforced by implementation | Proposal waiters are runtime-only and are not persisted |
+| Restart Log Safety | Both | Complete log survives process-independent reopen |
+| Failover + Restart Safety | Not established | Full multi-node failover/restart proof remains future work |
 
 ## Raft application invariant
 
@@ -89,14 +100,14 @@ The following remain deliberately unestablished: complete proposal behavior acro
 
 ## Scope exclusions
 
-V5.1 does not implement or claim:
+V5.2 does not implement or claim:
 
 - networked client protocol or automatic proposal forwarding;
 - client protocol or CLI KV commands;
 - real networking;
 - WAL replay or segmented WAL;
 - durable KV persistence;
-- restart orchestration or recovery integration;
+- durable KV files or snapshot-based recovery;
 - snapshots;
 - ReadIndex;
 - linearizable reads;

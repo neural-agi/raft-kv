@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-The implementation covers lifecycle, leader election, RequestVote, AppendEntries, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, deterministic in-memory KV state-machine application, the in-process client write path through NodeAPI.Propose, and V5.1 filesystem persistence of complete Raft state. Restart/recovery remains V5.2.
+The implementation covers lifecycle, leader election, RequestVote, AppendEntries, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, deterministic in-memory KV state-machine application, the in-process client write path through NodeAPI.Propose, and V5.1 filesystem persistence of complete Raft state. Restart/recovery is implemented in V5.2 through persisted commit metadata and committed-prefix replay.
 
 ## Package boundaries
 
@@ -89,7 +89,7 @@ Lengths are big-endian uint32 values. PUT requires a non-empty key and a value, 
 
 `commitIndex` means the Raft log prefix is known committed. `lastApplied` means the prefix successfully applied to the configured state machine. V3 maintains `lastApplied <= commitIndex`; commitment does not itself imply application success.
 
-State-machine application is not included in Raft persistent state. A future restart/recovery design must explicitly rebuild the in-memory state machine from committed log entries before exposing reads.
+State-machine application is not included in Raft persistent state. On restart, V5.2 rebuilds the in-memory state machine by replaying exactly the persisted committed log prefix before normal operation. A replay failure rejects initialization.
 
 ## Proposal flow
 
@@ -101,7 +101,7 @@ Follower and candidate proposals return `ErrCodeNotLeader` with the best-known l
 
 `Storage.Load` returns an independent complete `PersistentState`, or an error for missing/corrupt data other than a fresh zero state when the file does not yet exist. `Storage.Save` encodes the complete state as a versioned binary file, writes and syncs a temporary sibling, atomically renames it, and syncs the parent directory before reporting success. A failed replacement leaves the previous live file intact.
 
-V5.1 persists only `currentTerm`, `votedFor`, and the complete Raft log. It does not persist KV state, commit indexes, applied indexes, or proposal waiters. Restart orchestration and replay are future work.
+V5.2 persists `currentTerm`, `votedFor`, the complete Raft log, and `commitIndex`. `commitIndex` is durable recovery metadata because it identifies exactly which log prefix may be replayed. `lastApplied`, role, leader identity, replication maps, timers, and proposal waiters remain volatile. KV contents remain in memory and are reconstructed by replaying only the persisted committed prefix. A committed-prefix replay failure rejects initialization; uncommitted suffix entries are not replayed.
 
 ## Deferred behavior
 

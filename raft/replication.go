@@ -105,7 +105,7 @@ func (s *runtimeState) handleAppendEntries(request AppendEntriesArgs) AppendEntr
 		s.invalidateLostProposals()
 	}
 	if request.LeaderCommit > s.commitIndex {
-		s.commitIndex = minIndex(request.LeaderCommit, s.log.lastIndex())
+		s.publishCommit(minIndex(request.LeaderCommit, s.log.lastIndex()))
 	}
 	reply.Success = true
 	return reply
@@ -169,7 +169,7 @@ func (s *runtimeState) advanceCommitIndex() {
 			}
 		}
 		if count*2 > len(s.config.Peers)+1 {
-			s.commitIndex = index
+			s.publishCommit(index)
 			return
 		}
 	}

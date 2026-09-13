@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"sync"
 	"time"
@@ -75,8 +76,24 @@ func (n *Node) Initialize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if _, err := newRaftLog(state.Log); err != nil {
+	log, err := newRaftLog(state.Log)
+	if err != nil {
 		return err
+	}
+	if state.CommitIndex > log.lastIndex() {
+		return errors.New("persisted commit index exceeds log end")
+	}
+	for index := LogIndex(1); index <= state.CommitIndex; index++ {
+		entry, ok := log.entry(index)
+		if !ok {
+			return errors.New("persisted committed entry is missing")
+		}
+		if _, err := n.config.StateMachine.Apply(ctx, append([]byte(nil), entry.Command...)); err != nil {
+			n.mu.Lock()
+			n.lifecycle = Stopped
+			n.mu.Unlock()
+			return fmt.Errorf("replay committed entry %d: %w", index, err)
+		}
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()

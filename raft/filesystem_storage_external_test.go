@@ -51,6 +51,7 @@ func TestFilesystemStoragePreservesRaftPersistentState(t *testing.T) {
 		CurrentTerm: 4,
 		VotedFor:    "a",
 		Log:         []raft.LogEntry{{Term: 4, Index: 1, Command: []byte{0, 255}}},
+		CommitIndex: 1,
 	}
 	if err := fileStore.Save(context.Background(), want); err != nil {
 		t.Fatal(err)
@@ -59,7 +60,7 @@ func TestFilesystemStoragePreservesRaftPersistentState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.CurrentTerm != want.CurrentTerm || got.VotedFor != want.VotedFor || len(got.Log) != 1 || string(got.Log[0].Command) != string(want.Log[0].Command) {
+	if got.CurrentTerm != want.CurrentTerm || got.VotedFor != want.VotedFor || got.CommitIndex != want.CommitIndex || len(got.Log) != 1 || string(got.Log[0].Command) != string(want.Log[0].Command) {
 		t.Fatalf("persisted state = %#v", got)
 	}
 }
