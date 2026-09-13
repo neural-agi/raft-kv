@@ -1,0 +1,13 @@
+/bin/
+/build/
+/dist/
+data/
+*.wal
+*.snapshot
+coverage.out
+coverage.html
+*.test
+.DS_Store
+.idea/
+.vscode/
+tmp/
