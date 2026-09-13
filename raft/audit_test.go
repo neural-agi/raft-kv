@@ -27,7 +27,7 @@ func (s *failingStorage) Save(_ context.Context, state PersistentState) error {
 
 func auditNode(t *testing.T, id NodeID, peers []NodeID, storage Storage, transport Transport) *Node {
 	t.Helper()
-	node, err := NewNode(Config{ID: id, Peers: peers, Storage: storage, Transport: transport, ElectionTimeoutMin: 100 * time.Millisecond, ElectionTimeoutMax: 150 * time.Millisecond, HeartbeatInterval: 10 * time.Millisecond, Random: rand.New(rand.NewSource(11))})
+	node, err := NewNode(Config{ID: id, Peers: peers, Storage: storage, Transport: transport, ElectionTimeoutMin: 100 * time.Millisecond, ElectionTimeoutMax: 150 * time.Millisecond, HeartbeatInterval: 10 * time.Millisecond, Random: rand.New(rand.NewSource(11)), StateMachine: NewTestStateMachine()})
 	if err != nil {
 		t.Fatal(err)
 	}

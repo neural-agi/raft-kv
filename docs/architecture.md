@@ -2,24 +2,24 @@
 
 ## Current milestone
 
-The implementation now covers lifecycle, leader election, RequestVote, AppendEntries, heartbeats, opaque log replication, conflict repair, replication bookkeeping, and commit-index calculation for a fixed three-node cluster. It does not apply committed entries to the KV state machine yet.
+The implementation covers lifecycle, leader election, RequestVote, AppendEntries, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, and deterministic in-memory KV state-machine application. Client proposals remain deferred.
 
 ## Package boundaries
 
 ```text
 cmd/server       process wiring (later)
-cmd/client       client wiring (later)
+cmd/client       process wiring (later)
 cluster          static member identity and configuration
-raft             lifecycle, event loop, elections, log, replication, commitment
+raft             lifecycle, event loop, elections, log, replication, commitment, apply ordering
 transport        production delivery adapter (not implemented)
-storage          production durable adapter (not implemented)
-kv               deterministic command/state-machine contracts; not applied yet
+storage          production Raft durable adapter (not implemented)
+kv               binary commands and in-memory state machine
 fault            future test-only fault controls
 integration      future end-to-end tests
 docs             contracts and correctness argument
 ```
 
-Raft sees only opaque command bytes in `LogEntry.Command`. The KV package owns command meaning and is not called by the current milestone.
+Raft sees only opaque command bytes in `LogEntry.Command`. The KV package owns command meaning and state mutation. Raft never decodes PUT or DELETE.
 
 ## Event-loop ownership
 
@@ -31,11 +31,9 @@ One Raft event loop owns all mutable protocol state:
 - `commitIndex` and `lastApplied`;
 - election and heartbeat timer state;
 - leader `nextIndex` and `matchIndex`;
-- election vote tracking and replication decisions.
+- election vote tracking, replication decisions, and application ordering.
 
-RPC handlers enqueue immutable request events. Timer callbacks cause work to be processed by the event loop. Transport calls run outside the loop and enqueue immutable response events. No external goroutine directly reads or mutates protocol state.
-
-Blocking storage operations are invoked by the event-loop transition before acknowledging a durable state change. This keeps persistence ordering explicit. A future implementation may move storage calls outside the loop only if it preserves event ordering and stale-completion guards.
+RPC handlers enqueue immutable request events. Transport calls run outside the loop and enqueue immutable response events. The event loop alone advances `lastApplied` and invokes `StateMachine.Apply`. The KV map is not concurrently mutated by multiple apply calls.
 
 ## Lifecycle
 
@@ -45,50 +43,62 @@ A node moves through:
 Created -> Initialized -> Running -> Stopped
 ```
 
-Initialization loads and validates the complete persistent state. Start creates the event loop and election timer. Running nodes accept RequestVote and AppendEntries. Stop enqueues a shutdown event and waits for the loop to exit.
+Initialization loads and validates the complete Raft persistent state. The state-machine object is supplied during construction; its contents are in-memory and are not part of Raft persistent storage in V3.
 
-## Log and replication flow
+## Replication and application flow
 
 ```text
 leader election
       |
       v
-leader initializes nextIndex/matchIndex
+AppendEntries replication -> majority commitment
       |
       v
-heartbeat timer -> AppendEntries request
+commitIndex advances
       |
       v
-follower prev-log check and conflict repair
+apply entries from lastApplied+1 through commitIndex
       |
       v
-AppendEntries reply -> leader bookkeeping
+kv.StateMachine.Apply(encoded command)
       |
       v
-majority + current-term rule -> commitIndex
-      |
-      v
-lastApplied remains unchanged in this milestone
+lastApplied advances only after success
 ```
 
-The leader sends an empty AppendEntries when a follower is caught up and a suffix when it is behind. Failed replies decrement `nextIndex`; successful replies advance `matchIndex` and `nextIndex`. Stale replies are ignored.
+Committed entries are applied strictly in increasing log-index order. If Apply fails, the failed entry remains at `lastApplied+1`; later entries are not skipped and unrelated events do not reapply successful entries. A single event-loop-owned retry timer retries the failed prefix without requiring a new Raft protocol event.
+
+## KV command boundary
+
+The KV command format is binary and versioned:
+
+```text
+version(1) | type(1) | keyLen(4) | valueLen(4) | key bytes | value bytes
+```
+
+Lengths are big-endian uint32 values. PUT requires a non-empty key and a value, including an explicitly encoded empty value. DELETE requires a non-empty key and no value. The decoder validates exact input length, known version/type, and operation semantics, then copies decoded bytes.
+
+## KV semantics
+
+- PUT creates or replaces a value.
+- DELETE is idempotent. It returns `deleted` when a key existed and `missing` otherwise.
+- GET is a local `MemoryStore.Get` operation only. It is not a Raft command and is not linearizable.
+- Returned values are copied so callers cannot mutate internal store state.
 
 ## Commit versus apply
 
-`commitIndex` means the Raft log prefix is known committed. `lastApplied` is the separate application position and remains unchanged in this milestone. No committed entry is passed to `StateMachine.Apply` yet.
+`commitIndex` means the Raft log prefix is known committed. `lastApplied` means the prefix successfully applied to the configured state machine. V3 maintains `lastApplied <= commitIndex`; commitment does not itself imply application success.
 
-## Persistence
-
-`Storage` persists exactly the current term, voted-for node, and complete log. Term, vote, and log changes are saved before successful protocol responses. Commit indexes, timers, and replication maps remain volatile.
+State-machine application is not included in Raft persistent state. A future restart/recovery design must explicitly rebuild the in-memory state machine from committed log entries before exposing reads.
 
 ## Deferred behavior
 
-Not implemented in this milestone:
+Not implemented in V3:
 
-- KV state-machine application;
-- PUT, DELETE, GET, and client proposals;
+- `Propose` and client submission;
+- PUT/DELETE client protocol and CLI behavior;
 - real TCP/HTTP/gRPC networking;
 - filesystem WAL;
 - snapshots and compaction;
-- read-index or linearizable reads;
-- general fault injection.
+- ReadIndex or linearizable reads;
+- transactions, deduplication, or fault-injection framework.

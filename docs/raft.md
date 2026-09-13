@@ -1,85 +1,75 @@
-# Raft Protocol and Replication
+# Raft Protocol and KV Application
 
-The current implementation includes node lifecycle, leader election, RequestVote, AppendEntries, heartbeats, opaque log replication, conflict repair, replication bookkeeping, and commit-index calculation. It intentionally does not apply committed entries to a state machine yet.
+The current implementation includes lifecycle, leader election, RequestVote, AppendEntries, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, and ordered state-machine application. Client proposals remain deferred.
 
-## Log
+## Raft/KV boundary
 
-`raft.LogEntry` contains an explicit term, index, and opaque command bytes. The event-loop-owned in-memory log supports:
+Raft stores and replicates opaque `LogEntry.Command` bytes. It does not know KV operations. The KV package encodes and decodes commands and implements `raft.StateMachine`.
 
-- last index and last term;
-- entry and term lookup;
-- append of contiguous entries;
-- previous-log matching, including synthetic index zero with term zero;
-- truncation from a conflicting index;
-- replacement suffix append.
+```text
+kv.Command.Encode()
+        |
+        v
+opaque LogEntry.Command
+        |
+        v
+Raft replication and commitment
+        |
+        v
+StateMachine.Apply(command bytes)
+        |
+        v
+lastApplied advances
+```
 
-No snapshot base index or compaction exists yet.
+## Command encoding
 
-## AppendEntries follower flow
+V3 uses a deterministic binary format:
 
-For every request:
+```text
+version(1) | type(1) | keyLen(4) | valueLen(4) | key | value
+```
 
-1. A request from an older term is rejected without changing the log or resetting the election timer.
-2. A newer term is durably persisted, then the node becomes follower and clears obsolete election state.
-3. A current/new leader is recorded and valid leader contact resets the election timer.
-4. `PrevLogIndex` and `PrevLogTerm` must match the local log. A mismatch returns `Success=false` without appending.
-5. The first existing entry with a different term causes the local suffix to be truncated and the incoming suffix appended. Missing entries are appended directly.
-6. Log changes are persisted before `Success=true` is returned.
-7. `commitIndex` advances to `min(LeaderCommit, lastLogIndex)` and never decreases.
+All integer lengths are big-endian uint32 values. Version is currently `1`. Type `1` is PUT and type `2` is DELETE. The decoder requires the input to be exactly the declared length, rejects unknown versions/types and invalid operation-specific lengths, and copies key/value data out of the input buffer.
 
-An empty `Entries` slice is a heartbeat. A valid empty AppendEntries still performs leader recognition and timer reset.
+Keys are arbitrary non-empty byte strings. PUT values may contain arbitrary bytes, including zero bytes and empty values. DELETE has no value field. Empty keys are rejected.
 
-## Leader heartbeat and replication flow
+## KV behavior
 
-When a candidate becomes leader:
+`MemoryStore.Apply` atomically decodes and applies one command:
 
-- `nextIndex[follower]` is initialized to `leaderLastLogIndex + 1`;
-- `matchIndex[follower]` starts at zero;
-- the leader's own `matchIndex` is its last log index;
-- an immediate AppendEntries round is sent.
+- PUT creates or replaces the key and returns a copy of the stored value;
+- DELETE removes the key and returns `deleted` if present or `missing` for an idempotent no-op;
+- malformed commands fail before map mutation.
 
-The heartbeat timer sends AppendEntries periodically. If a follower is behind, the same message carries the suffix beginning at its `nextIndex`; otherwise it is empty.
+`MemoryStore.Get` is local-only. It returns a copied value and presence flag. GET is not a log command and is not a linearizable Raft read.
 
-A successful reply advances `matchIndex` to the highest index included in that request and advances `nextIndex` to `matchIndex+1`. A failed reply decrements `nextIndex` down to one and retries with the corrected previous-log position. Replies are tagged by the leader term and ignored if stale or if the node is no longer leader.
+## Applying committed entries
 
-Transport calls execute outside the event loop. Their immutable replies are re-enqueued as events before replication state changes occur.
+The Raft event loop checks whether `lastApplied < commitIndex` after event processing. It repeatedly selects exactly `lastApplied+1`, passes that entry's immutable command bytes to `StateMachine.Apply`, and advances `lastApplied` only after Apply succeeds.
 
-## Commitment
+If Apply fails:
 
-The leader examines candidate indexes from newest to oldest. An index can advance `commitIndex` only when:
+- `lastApplied` remains before the failed entry;
+- later committed entries are not skipped;
+- an event-loop-owned retry timer schedules another application pass;
+- successful earlier entries are not applied again;
+- the next successful pass retries the failed entry and continues the committed prefix.
 
-- a majority has `matchIndex >= index`; and
-- the entry at that index has the leader's current term.
+Application remains event-loop-owned; no external goroutine mutates `lastApplied` or the state machine.
 
-Once a current-term entry is committed, preceding entries become committed as part of the same prefix. An older-term entry replicated to a majority by itself does not advance `commitIndex`.
+## Existing replication behavior
 
-The follower applies the same monotonic bound when processing `LeaderCommit`: its commit index cannot exceed its local last log index.
-
-## Committed versus applied
-
-This milestone deliberately keeps `commitIndex` and `lastApplied` separate. Committed entries are not passed to `StateMachine.Apply`, and `lastApplied` remains unchanged. KV command decoding and state-machine application belong to the next milestone.
-
-## Terms and persistence
-
-Every higher observed term is persisted before the node adopts it. Higher terms force follower state and clear obsolete election/vote bookkeeping. Vote changes and log changes are persisted before successful protocol responses are returned.
-
-A higher-term AppendEntries reply steps a leader down. Stale AppendEntries replies cannot modify `nextIndex`, `matchIndex`, or `commitIndex`.
-
-## Event-loop ownership
-
-The event loop exclusively owns role, term, vote state, log, commit index, last-applied index, leader ID, timers, `nextIndex`, and `matchIndex`.
-
-RPC handlers enqueue request events. Timer callbacks enqueue timer work. Transport goroutines enqueue immutable response events. No external goroutine mutates protocol state directly.
+AppendEntries validates terms and previous-log matching, repairs conflicting suffixes atomically with respect to persistence, and advances follower commit index with a local-log bound. Leaders track `nextIndex`/`matchIndex` and commit only current-term entries replicated to a majority. These committed entries are now eligible for ordered state-machine application but are not submitted by a client proposal yet.
 
 ## Deferred behavior
 
 Still out of scope:
 
-- KV state-machine application;
-- PUT, DELETE, GET, and client proposals;
+- `NodeAPI.Propose` implementation;
+- client protocol and CLI KV commands;
 - real TCP/HTTP/gRPC networking;
 - filesystem WAL;
 - snapshots and compaction;
-- read-index or linearizable reads;
-- general fault injection;
-- optimized conflict-term/index responses.
+- ReadIndex and linearizable reads;
+- transactions, deduplication, and general fault injection.

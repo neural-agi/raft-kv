@@ -10,7 +10,7 @@ import (
 func nodeWithState(t *testing.T, id NodeID, peers []NodeID, state PersistentState, transport Transport) (*Node, *testStorage) {
 	t.Helper()
 	storage := &testStorage{state: state}
-	node, err := NewNode(Config{ID: id, Peers: peers, Storage: storage, Transport: transport, ElectionTimeoutMin: 600 * time.Millisecond, ElectionTimeoutMax: 900 * time.Millisecond, HeartbeatInterval: 5 * time.Millisecond, Random: rand.New(rand.NewSource(7))})
+	node, err := NewNode(Config{ID: id, Peers: peers, Storage: storage, Transport: transport, ElectionTimeoutMin: 600 * time.Millisecond, ElectionTimeoutMax: 900 * time.Millisecond, HeartbeatInterval: 5 * time.Millisecond, Random: rand.New(rand.NewSource(7)), StateMachine: NewTestStateMachine()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestAppendEntriesFollowerRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(debug.Log) != 3 || string(debug.Log[1].Command) != "replacement" || debug.CommitIndex != 3 || debug.LastApplied != 0 {
+	if len(debug.Log) != 3 || string(debug.Log[1].Command) != "replacement" || debug.CommitIndex != 3 || debug.LastApplied != 3 {
 		t.Fatalf("state after append = %#v", debug)
 	}
 	if len(storage.saves) == 0 {

@@ -36,6 +36,7 @@ func newTestNode(t *testing.T, id NodeID, peers []NodeID, storage Storage, trans
 		ElectionTimeoutMax: 40 * time.Millisecond,
 		HeartbeatInterval:  5 * time.Millisecond,
 		Random:             rand.New(rand.NewSource(int64(id[0]))),
+		StateMachine:       NewTestStateMachine(),
 	})
 	if err != nil {
 		t.Fatal(err)

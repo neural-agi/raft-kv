@@ -23,7 +23,9 @@ type Config struct {
 	ElectionTimeoutMin time.Duration
 	ElectionTimeoutMax time.Duration
 	HeartbeatInterval  time.Duration
+	ApplyRetryInterval time.Duration
 	Random             *rand.Rand
+	StateMachine       StateMachine
 }
 
 type Node struct {
@@ -51,6 +53,12 @@ func NewNode(config Config) (*Node, error) {
 	}
 	if config.HeartbeatInterval <= 0 || config.HeartbeatInterval >= config.ElectionTimeoutMin {
 		return nil, errors.New("invalid heartbeat interval")
+	}
+	if config.ApplyRetryInterval <= 0 {
+		config.ApplyRetryInterval = config.HeartbeatInterval
+	}
+	if config.StateMachine == nil {
+		return nil, errors.New("raft state machine is required")
 	}
 	return &Node{config: config, lifecycle: Created}, nil
 }
@@ -189,11 +197,16 @@ func (n *Node) run() {
 	}
 	electionTimer := time.NewTimer(state.nextElectionTimeout())
 	heartbeatTimer := time.NewTimer(time.Hour)
+	applyRetryTimer := time.NewTimer(time.Hour)
 	if !heartbeatTimer.Stop() {
 		<-heartbeatTimer.C
 	}
+	if !applyRetryTimer.Stop() {
+		<-applyRetryTimer.C
+	}
 	defer electionTimer.Stop()
 	defer heartbeatTimer.Stop()
+	defer applyRetryTimer.Stop()
 	resetElection := func() {
 		if !electionTimer.Stop() {
 			select {
@@ -202,6 +215,17 @@ func (n *Node) run() {
 			}
 		}
 		electionTimer.Reset(state.nextElectionTimeout())
+	}
+	resetApplyRetry := func() {
+		if !applyRetryTimer.Stop() {
+			select {
+			case <-applyRetryTimer.C:
+			default:
+			}
+		}
+		if state.lastApplied < state.commitIndex {
+			applyRetryTimer.Reset(state.config.ApplyRetryInterval)
+		}
 	}
 	resetHeartbeat := func() {
 		if !heartbeatTimer.Stop() {
@@ -232,6 +256,9 @@ func (n *Node) run() {
 			if state.role == Leader {
 				resetHeartbeat()
 			}
+		case <-applyRetryTimer.C:
+			state.applyCommitted()
+			resetApplyRetry()
 		case <-heartbeatTimer.C:
 			if state.role == Leader {
 				state.sendAppendEntries()
@@ -241,6 +268,8 @@ func (n *Node) run() {
 			if event.handle(state) {
 				return
 			}
+			state.applyCommitted()
+			resetApplyRetry()
 			if state.resetElectionTimer {
 				state.resetElectionTimer = false
 				resetElection()
