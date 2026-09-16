@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-The implementation covers lifecycle, leader election, RequestVote, AppendEntries, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, deterministic in-memory KV state-machine application, the in-process client write path through NodeAPI.Propose, and V5.1 filesystem persistence of complete Raft state. Restart/recovery is implemented in V5.2 through persisted commit metadata and committed-prefix replay.
+The implementation covers lifecycle, leader election, RequestVote, AppendEntries, InstallSnapshot, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, deterministic in-memory KV state-machine application, snapshots and log compaction, the in-process client write path through NodeAPI.Propose, and filesystem persistence of complete Raft state plus separate snapshots. Restart/recovery restores a snapshot and replays only the committed retained suffix.
 
 ## Package boundaries
 
@@ -12,7 +12,7 @@ cmd/client       process wiring (later)
 cluster          static member identity and configuration
 raft             lifecycle, event loop, elections, log, replication, commitment, apply ordering
 transport        production delivery adapter (not implemented)
-storage          filesystem-backed complete PersistentState storage (V5.1); WAL not implemented
+storage          filesystem-backed PersistentState and SnapshotStorage; WAL not implemented
 kv               binary commands and in-memory state machine
 fault            deterministic test-only fault controls
 integration      future end-to-end tests
@@ -29,6 +29,7 @@ One Raft event loop owns all mutable protocol state:
 - the in-memory log;
 - leader ID;
 - `commitIndex` and `lastApplied`;
+- the compacted log boundary;
 - election and heartbeat timer state;
 - leader `nextIndex` and `matchIndex`;
 - election vote tracking, replication decisions, application ordering, and proposal waiter completion.
@@ -89,7 +90,7 @@ Lengths are big-endian uint32 values. PUT requires a non-empty key and a value, 
 
 `commitIndex` means the Raft log prefix is known committed. `lastApplied` means the prefix successfully applied to the configured state machine. V3 maintains `lastApplied <= commitIndex`; commitment does not itself imply application success.
 
-State-machine application is not included in Raft persistent state. On restart, V5.2 rebuilds the in-memory state machine by replaying exactly the persisted committed log prefix before normal operation. A replay failure rejects initialization.
+State-machine application is not included in Raft persistent state. A committed applied prefix can be represented by a separate opaque snapshot. On restart, the snapshot is restored first and only committed retained entries are replayed. A restore or replay failure rejects initialization.
 
 ## Proposal flow
 
@@ -99,7 +100,7 @@ Follower and candidate proposals return `ErrCodeNotLeader` with the best-known l
 
 ## Persistent storage boundary
 
-`Storage.Load` returns an independent complete `PersistentState`, or an error for missing/corrupt data other than a fresh zero state when the file does not yet exist. `Storage.Save` encodes the complete state as a versioned binary file, writes and syncs a temporary sibling, atomically renames it, and syncs the parent directory before reporting success. A failed replacement leaves the previous live file intact.
+`Storage.Load` returns an independent complete `PersistentState`, or an error for unreadable/invalid persisted data other than a fresh zero state when the file does not yet exist. V7 adds a versioned compacted-boundary index/term to this state. `SnapshotStorage` separately persists opaque state-machine snapshots using the same temporary-file, sync, rename, and parent-directory-sync discipline. Compaction persists the snapshot before the compacted Raft metadata and publishes neither live boundary until both saves succeed.
 
 V5.2 persists `currentTerm`, `votedFor`, the complete Raft log, and `commitIndex`. `commitIndex` is durable recovery metadata because it identifies exactly which log prefix may be replayed. `lastApplied`, role, leader identity, replication maps, timers, and proposal waiters remain volatile. KV contents remain in memory and are reconstructed by replaying only the persisted committed prefix. A committed-prefix replay failure rejects initialization; uncommitted suffix entries are not replayed.
 

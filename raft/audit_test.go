@@ -42,7 +42,7 @@ func auditNode(t *testing.T, id NodeID, peers []NodeID, storage Storage, transpo
 }
 
 func TestLogReplacementIsAtomicOnInvalidSuffix(t *testing.T) {
-	log, err := newRaftLog([]LogEntry{{Term: 1, Index: 1}, {Term: 2, Index: 2}})
+	log, err := newRaftLog(LogBoundary{}, []LogEntry{{Term: 1, Index: 1}, {Term: 2, Index: 2}})
 	if err != nil {
 		t.Fatal(err)
 	}

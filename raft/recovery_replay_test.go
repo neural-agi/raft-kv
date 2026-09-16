@@ -43,6 +43,8 @@ func (m *countingFailureMachine) Apply(context.Context, []byte) ([]byte, error) 
 	m.calls++
 	return nil, context.Canceled
 }
+func (m *countingFailureMachine) Snapshot(context.Context) ([]byte, error) { return nil, nil }
+func (m *countingFailureMachine) Restore(context.Context, []byte) error    { return nil }
 
 type recoveryStorage struct{ state raft.PersistentState }
 

@@ -38,7 +38,7 @@ func (e proposalRequestEvent) handle(s *runtimeState) bool {
 		return false
 	}
 	entry := LogEntry{Term: s.persistent.CurrentTerm, Index: s.log.lastIndex() + 1, Command: append([]byte(nil), e.command...)}
-	candidate := &raftLog{entries: s.log.snapshot()}
+	candidate := &raftLog{boundary: s.log.boundary, entries: s.log.snapshot()}
 	if err := candidate.append(entry); err != nil {
 		e.reply <- proposalCompletion{err: err}
 		return false

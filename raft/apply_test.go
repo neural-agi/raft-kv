@@ -78,7 +78,7 @@ type applyTestStateEvent struct {
 }
 
 func (e applyTestStateEvent) handle(s *runtimeState) bool {
-	candidate := &raftLog{entries: s.log.snapshot()}
+	candidate := &raftLog{boundary: s.log.boundary, entries: s.log.snapshot()}
 	if err := candidate.append(e.entries...); err != nil {
 		e.reply <- err
 		return false

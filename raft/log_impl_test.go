@@ -3,7 +3,7 @@ package raft
 import "testing"
 
 func TestRaftLogMechanics(t *testing.T) {
-	log, err := newRaftLog(nil)
+	log, err := newRaftLog(LogBoundary{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

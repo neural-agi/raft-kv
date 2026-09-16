@@ -45,6 +45,37 @@ func (s *testStateMachine) Commands() [][]byte {
 	return commands
 }
 
+func (s *testStateMachine) Snapshot(context.Context) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var data []byte
+	for _, command := range s.commands {
+		if len(command) > 255 {
+			return nil, errors.New("test command too large")
+		}
+		data = append(data, byte(len(command)))
+		data = append(data, command...)
+	}
+	return data, nil
+}
+
+func (s *testStateMachine) Restore(_ context.Context, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	commands := make([][]byte, 0)
+	for pos := 0; pos < len(data); {
+		length := int(data[pos])
+		pos++
+		if length > len(data)-pos {
+			return errors.New("invalid test snapshot")
+		}
+		commands = append(commands, append([]byte(nil), data[pos:pos+length]...))
+		pos += length
+	}
+	s.commands = commands
+	return nil
+}
+
 func (s *testStateMachine) Apply(_ context.Context, command []byte) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

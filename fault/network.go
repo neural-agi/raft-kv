@@ -82,6 +82,14 @@ func (t *senderTransport) RequestVote(ctx context.Context, target raft.NodeID, r
 	return value.(raft.RequestVoteReply), nil
 }
 
+func (t *senderTransport) InstallSnapshot(ctx context.Context, target raft.NodeID, request raft.InstallSnapshotArgs) (raft.InstallSnapshotReply, error) {
+	value, err := t.network.call(ctx, t.from, string(target), InstallSnapshot, func(node *raft.Node) (any, error) { return node.InstallSnapshot(ctx, request) })
+	if err != nil {
+		return raft.InstallSnapshotReply{}, err
+	}
+	return value.(raft.InstallSnapshotReply), nil
+}
+
 func (t *senderTransport) AppendEntries(ctx context.Context, target raft.NodeID, request raft.AppendEntriesArgs) (raft.AppendEntriesReply, error) {
 	value, err := t.network.call(ctx, t.from, string(target), AppendEntries, func(node *raft.Node) (any, error) { return node.AppendEntries(ctx, request) })
 	if err != nil {

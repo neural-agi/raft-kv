@@ -27,6 +27,7 @@ type Config struct {
 	ApplyRetryInterval time.Duration
 	Random             *rand.Rand
 	StateMachine       StateMachine
+	SnapshotStorage    SnapshotStorage
 }
 
 type Node struct {
@@ -35,6 +36,7 @@ type Node struct {
 	mu        sync.Mutex
 	lifecycle Lifecycle
 	state     PersistentState
+	snapshot  Snapshot
 	done      chan struct{}
 	events    chan nodeEvent
 }
@@ -76,14 +78,32 @@ func (n *Node) Initialize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	log, err := newRaftLog(state.Log)
+	log, err := newRaftLog(state.SnapshotBoundary, state.Log)
 	if err != nil {
 		return err
 	}
-	if state.CommitIndex > log.lastIndex() {
-		return errors.New("persisted commit index exceeds log end")
+	if state.CommitIndex > log.lastIndex() || state.CommitIndex < state.SnapshotBoundary.Index {
+		return errors.New("persisted commit index is outside durable log")
 	}
-	for index := LogIndex(1); index <= state.CommitIndex; index++ {
+	if state.SnapshotBoundary.Index > 0 {
+		if n.config.SnapshotStorage == nil {
+			return errors.New("snapshot storage is required for compacted state")
+		}
+		snapshot, err := n.config.SnapshotStorage.LoadSnapshot(ctx)
+		if err != nil {
+			return err
+		}
+		if snapshot.LastIncludedIndex != state.SnapshotBoundary.Index || snapshot.LastIncludedTerm != state.SnapshotBoundary.Term {
+			return errors.New("snapshot metadata does not match persistent state")
+		}
+		if err := n.config.StateMachine.Restore(ctx, append([]byte(nil), snapshot.StateMachineData...)); err != nil {
+			n.mu.Lock()
+			n.lifecycle = Stopped
+			n.mu.Unlock()
+			return fmt.Errorf("restore snapshot: %w", err)
+		}
+	}
+	for index := state.SnapshotBoundary.Index + 1; index <= state.CommitIndex; index++ {
 		entry, ok := log.entry(index)
 		if !ok {
 			return errors.New("persisted committed entry is missing")

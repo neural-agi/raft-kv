@@ -75,6 +75,19 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
+// InstallSnapshotArgs carries a complete opaque state-machine snapshot.
+type InstallSnapshotArgs struct {
+	Term              Term
+	LeaderID          NodeID
+	LastIncludedIndex LogIndex
+	LastIncludedTerm  Term
+	Data              []byte
+}
+
+type InstallSnapshotReply struct {
+	Term Term
+}
+
 // ErrCode classifies outcomes exposed by the future Raft client API.
 type ErrCode uint8
 

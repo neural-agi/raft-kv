@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	formatVersion byte = 2
+	formatVersion byte = 3
 	headerSize         = 4 // magic(2), version(1), reserved(1)
 	maxFieldSize       = uint64(^uint32(0))
 )
@@ -137,9 +137,15 @@ func (s *FileStorage) Save(ctx context.Context, state raft.PersistentState) erro
 }
 
 func encodeState(state raft.PersistentState) ([]byte, error) {
-	size := uint64(headerSize + 8 + 4 + 4 + 8 + len(state.VotedFor))
+	size := uint64(headerSize + 8 + 4 + 4 + 8 + 8 + 8 + len(state.VotedFor))
 	if uint64(len(state.VotedFor)) > maxFieldSize || uint64(len(state.Log)) > maxFieldSize {
 		return nil, errors.New("raft state field is too large")
+	}
+	if state.SnapshotBoundary.Index > 0 && state.SnapshotBoundary.Term == 0 {
+		return nil, errors.New("snapshot boundary term must be greater than zero")
+	}
+	if state.CommitIndex < state.SnapshotBoundary.Index {
+		return nil, errors.New("commit index precedes snapshot boundary")
 	}
 	for _, entry := range state.Log {
 		if err := entry.Validate(); err != nil {
@@ -163,6 +169,10 @@ func encodeState(state raft.PersistentState) ([]byte, error) {
 	putU32(data[pos:pos+4], uint32(len(state.Log)))
 	pos += 4
 	putU64(data[pos:pos+8], uint64(state.CommitIndex))
+	pos += 8
+	putU64(data[pos:pos+8], uint64(state.SnapshotBoundary.Index))
+	pos += 8
+	putU64(data[pos:pos+8], uint64(state.SnapshotBoundary.Term))
 	pos += 8
 	for _, entry := range state.Log {
 		putU64(data[pos:pos+8], uint64(entry.Term))
@@ -201,6 +211,20 @@ func decodeState(data []byte) (raft.PersistentState, error) {
 	if !ok {
 		return raft.PersistentState{}, io.ErrUnexpectedEOF
 	}
+	boundaryIndex, ok := readU64(data, &pos)
+	if !ok {
+		return raft.PersistentState{}, io.ErrUnexpectedEOF
+	}
+	boundaryTerm, ok := readU64(data, &pos)
+	if !ok {
+		return raft.PersistentState{}, io.ErrUnexpectedEOF
+	}
+	if boundaryIndex > 0 && boundaryTerm == 0 {
+		return raft.PersistentState{}, errors.New("invalid snapshot boundary")
+	}
+	if commitIndex < boundaryIndex {
+		return raft.PersistentState{}, errors.New("persisted commit index precedes snapshot boundary")
+	}
 	if uint64(count) > uint64(len(data)-pos)/20 {
 		return raft.PersistentState{}, errInvalidFormat
 	}
@@ -232,10 +256,17 @@ func decodeState(data []byte) (raft.PersistentState, error) {
 	if pos != len(data) {
 		return raft.PersistentState{}, errInvalidFormat
 	}
-	if commitIndex > uint64(len(log)) {
+	lastIndex := boundaryIndex
+	if len(log) > 0 {
+		if uint64(log[0].Index) != boundaryIndex+1 {
+			return raft.PersistentState{}, errors.New("persisted log does not follow snapshot boundary")
+		}
+		lastIndex = uint64(log[len(log)-1].Index)
+	}
+	if commitIndex > lastIndex {
 		return raft.PersistentState{}, errors.New("persisted commit index exceeds log end")
 	}
-	return raft.PersistentState{CurrentTerm: raft.Term(term), VotedFor: raft.NodeID(votedFor), Log: log, CommitIndex: raft.LogIndex(commitIndex)}, nil
+	return raft.PersistentState{CurrentTerm: raft.Term(term), VotedFor: raft.NodeID(votedFor), Log: log, CommitIndex: raft.LogIndex(commitIndex), SnapshotBoundary: raft.LogBoundary{Index: raft.LogIndex(boundaryIndex), Term: raft.Term(boundaryTerm)}}, nil
 }
 
 func putU32(dst []byte, value uint32) {

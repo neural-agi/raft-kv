@@ -8,6 +8,7 @@ import "context"
 type Transport interface {
 	RequestVote(ctx context.Context, target NodeID, request RequestVoteArgs) (RequestVoteReply, error)
 	AppendEntries(ctx context.Context, target NodeID, request AppendEntriesArgs) (AppendEntriesReply, error)
+	InstallSnapshot(ctx context.Context, target NodeID, request InstallSnapshotArgs) (InstallSnapshotReply, error)
 }
 
 // Storage owns Raft's durable state. Load returns a complete independent state
@@ -22,21 +23,37 @@ type Storage interface {
 	Save(ctx context.Context, state PersistentState) error
 }
 
+// SnapshotStorage owns durable replacement of the latest state-machine snapshot.
+// A missing snapshot returns the zero Snapshot.
+type SnapshotStorage interface {
+	LoadSnapshot(ctx context.Context) (Snapshot, error)
+	SaveSnapshot(ctx context.Context, snapshot Snapshot) error
+}
+
+// LogBoundary identifies the compacted prefix without containing the opaque
+// state-machine snapshot bytes.
+type LogBoundary struct {
+	Index LogIndex
+	Term  Term
+}
+
 // PersistentState is exactly the Raft state required to survive a crash:
-// current term, current-term vote, the replicated log, and durable commit metadata.
-// CommitIndex identifies the committed prefix and must not exceed the log end.
-// LastApplied and all other runtime state remain reconstructible and volatile.
+// current term, current-term vote, retained log, compacted boundary, and commit
+// metadata. Snapshot payloads are stored through SnapshotStorage.
 type PersistentState struct {
-	CurrentTerm Term
-	VotedFor    NodeID
-	Log         []LogEntry
-	CommitIndex LogIndex
+	CurrentTerm      Term
+	VotedFor         NodeID
+	Log              []LogEntry
+	CommitIndex      LogIndex
+	SnapshotBoundary LogBoundary
 }
 
 // StateMachine applies committed commands in log order. It must not be called for
 // uncommitted entries. Apply is deterministic for the same prior state and command.
 type StateMachine interface {
 	Apply(ctx context.Context, command []byte) (result []byte, err error)
+	Snapshot(ctx context.Context) ([]byte, error)
+	Restore(ctx context.Context, data []byte) error
 }
 
 // ProposalResult describes a command that Raft has committed and successfully

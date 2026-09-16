@@ -98,3 +98,5 @@ func (testStorage) Save(context.Context, raft.PersistentState) error { return ni
 type testMachine struct{}
 
 func (testMachine) Apply(context.Context, []byte) ([]byte, error) { return nil, nil }
+func (testMachine) Snapshot(context.Context) ([]byte, error)      { return nil, nil }
+func (testMachine) Restore(context.Context, []byte) error         { return nil }

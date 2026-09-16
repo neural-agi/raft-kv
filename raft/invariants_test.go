@@ -8,8 +8,15 @@ func AssertStateInvariants(t testing.TB, states map[NodeID]DebugState) {
 	t.Helper()
 	leaders := map[Term]NodeID{}
 	for id, state := range states {
-		if state.CommitIndex > LogIndex(len(state.Log)) {
-			t.Fatalf("node %s: commitIndex=%d exceeds log end=%d (term=%d role=%s lastApplied=%d)", id, state.CommitIndex, len(state.Log), state.Term, state.Role, state.LastApplied)
+		lastIndex := state.SnapshotBoundary.Index
+		if len(state.Log) > 0 {
+			lastIndex = state.Log[len(state.Log)-1].Index
+			if state.Log[0].Index != state.SnapshotBoundary.Index+1 {
+				t.Fatalf("node %s: retained log does not follow snapshot boundary: boundary=%d first=%d", id, state.SnapshotBoundary.Index, state.Log[0].Index)
+			}
+		}
+		if state.CommitIndex < state.SnapshotBoundary.Index || state.CommitIndex > lastIndex {
+			t.Fatalf("node %s: commitIndex=%d outside boundary/log [%d,%d]", id, state.CommitIndex, state.SnapshotBoundary.Index, lastIndex)
 		}
 		if state.LastApplied > state.CommitIndex {
 			t.Fatalf("node %s: lastApplied=%d exceeds commitIndex=%d (term=%d role=%s log=%d)", id, state.LastApplied, state.CommitIndex, state.Term, state.Role, len(state.Log))

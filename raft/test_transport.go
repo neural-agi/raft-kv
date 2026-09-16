@@ -55,6 +55,17 @@ func (t *MemoryTransport) RequestVote(ctx context.Context, target NodeID, reques
 	return node.RequestVote(ctx, request)
 }
 
+func (t *MemoryTransport) InstallSnapshot(ctx context.Context, target NodeID, request InstallSnapshotArgs) (InstallSnapshotReply, error) {
+	t.mu.Lock()
+	node := t.peers[target]
+	dropped := t.dropAppend[target]
+	t.mu.Unlock()
+	if node == nil || dropped {
+		return InstallSnapshotReply{}, errors.New("install snapshot delivery unavailable")
+	}
+	return node.InstallSnapshot(ctx, request)
+}
+
 func (t *MemoryTransport) AppendEntries(ctx context.Context, target NodeID, request AppendEntriesArgs) (AppendEntriesReply, error) {
 	t.mu.Lock()
 	node := t.peers[target]

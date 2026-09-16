@@ -5,45 +5,56 @@ import "errors"
 // raftLog is the event-loop-owned in-memory log. Index zero is the synthetic
 // position before the first entry and is never stored in entries.
 type raftLog struct {
-	entries []LogEntry
+	boundary LogBoundary
+	entries  []LogEntry
 }
 
-func newRaftLog(entries []LogEntry) (*raftLog, error) {
-	log := &raftLog{entries: append([]LogEntry(nil), entries...)}
+func newRaftLog(boundary LogBoundary, entries []LogEntry) (*raftLog, error) {
+	if boundary.Index > 0 && boundary.Term == 0 {
+		return nil, errors.New("snapshot boundary term must be greater than zero")
+	}
+	log := &raftLog{boundary: boundary, entries: append([]LogEntry(nil), entries...)}
 	for i := range log.entries {
 		if err := log.entries[i].Validate(); err != nil {
 			return nil, err
+		}
+		if i == 0 && log.entries[i].Index != log.firstIndex() {
+			return nil, errors.New("retained log does not follow snapshot boundary")
+		}
+		if i > 0 && log.entries[i].Index != log.entries[i-1].Index+1 {
+			return nil, errors.New("log entries are not contiguous")
 		}
 		log.entries[i].Command = append([]byte(nil), log.entries[i].Command...)
 	}
 	return log, nil
 }
 
+func (l *raftLog) firstIndex() LogIndex { return l.boundary.Index + 1 }
+
 func (l *raftLog) lastIndex() LogIndex {
 	if len(l.entries) == 0 {
-		return 0
+		return l.boundary.Index
 	}
 	return l.entries[len(l.entries)-1].Index
 }
 
 func (l *raftLog) lastTerm() Term {
 	if len(l.entries) == 0 {
-		return 0
+		return l.boundary.Term
 	}
 	return l.entries[len(l.entries)-1].Term
 }
 
 func (l *raftLog) entry(index LogIndex) (LogEntry, bool) {
-	if index == 0 {
+	if index == l.boundary.Index && index > 0 {
+		return LogEntry{Index: l.boundary.Index, Term: l.boundary.Term}, true
+	}
+	if index < l.firstIndex() || index > l.lastIndex() {
 		return LogEntry{}, false
 	}
-	for _, entry := range l.entries {
-		if entry.Index == index {
-			entry.Command = append([]byte(nil), entry.Command...)
-			return entry, true
-		}
-	}
-	return LogEntry{}, false
+	entry := l.entries[index-l.firstIndex()]
+	entry.Command = append([]byte(nil), entry.Command...)
+	return entry, true
 }
 
 func (l *raftLog) term(index LogIndex) (Term, bool) {
@@ -62,12 +73,10 @@ func (l *raftLog) append(entries ...LogEntry) error {
 		if err := entry.Validate(); err != nil {
 			return err
 		}
-		if len(l.entries) > 0 && entry.Index != l.lastIndex()+1 {
+		if entry.Index != l.lastIndex()+1 {
 			return errors.New("log entry index is not contiguous")
 		}
-		if len(l.entries) == 0 && entry.Index != 1 {
-			return errors.New("first log entry index must be one")
-		}
+
 		entry.Command = append([]byte(nil), entry.Command...)
 		l.entries = append(l.entries, entry)
 	}
@@ -75,21 +84,18 @@ func (l *raftLog) append(entries ...LogEntry) error {
 }
 
 func (l *raftLog) truncateFrom(index LogIndex) {
-	if index == 0 {
+	if index <= l.boundary.Index {
 		l.entries = nil
 		return
 	}
-	for i, entry := range l.entries {
-		if entry.Index >= index {
-			l.entries = l.entries[:i]
-			return
-		}
+	if index <= l.lastIndex() {
+		l.entries = l.entries[:index-l.firstIndex()]
 	}
 }
 
 func (l *raftLog) replaceFrom(index LogIndex, entries []LogEntry) error {
-	if index == 0 {
-		return errors.New("replacement index must be greater than zero")
+	if index <= l.boundary.Index {
+		return errors.New("cannot replace compacted log prefix")
 	}
 	for i, entry := range entries {
 		if err := entry.Validate(); err != nil {
@@ -99,12 +105,29 @@ func (l *raftLog) replaceFrom(index LogIndex, entries []LogEntry) error {
 			return errors.New("replacement entries are not contiguous")
 		}
 	}
-	candidate := &raftLog{entries: append([]LogEntry(nil), l.entries...)}
+	candidate := &raftLog{boundary: l.boundary, entries: append([]LogEntry(nil), l.entries...)}
 	candidate.truncateFrom(index)
 	if err := candidate.append(entries...); err != nil {
 		return err
 	}
 	l.entries = candidate.entries
+	return nil
+}
+
+func (l *raftLog) compact(index LogIndex, term Term) error {
+	if index < l.boundary.Index || index > l.lastIndex() {
+		return errors.New("invalid compaction index")
+	}
+	actual, ok := l.term(index)
+	if !ok || actual != term {
+		return errors.New("compaction term mismatch")
+	}
+	if index == l.lastIndex() {
+		l.entries = nil
+	} else {
+		l.entries = append([]LogEntry(nil), l.entries[index-l.firstIndex()+1:]...)
+	}
+	l.boundary = LogBoundary{Index: index, Term: term}
 	return nil
 }
 

@@ -38,13 +38,13 @@ This document classifies the current election, replication, commitment, and KV s
 | Binary Command Preservation | Both | Length-prefixed binary command encoding and filesystem round-trip tests |
 | Crash Durability Boundary | Enforced by implementation | File sync, atomic rename, and parent-directory sync precede successful Save; crash recovery remains untested |
 | V5.1 filesystem storage | Both | Fresh, round-trip, corruption, failure, and atomicity tests |
-| Persistent CommitIndex Safety | Both | CommitIndex is validated against log end and persisted before publication |
+| Persistent CommitIndex Safety | Both | CommitIndex is validated against the compacted boundary/log end and persisted before publication |
 | Commit Persistence Ordering | Both | Leader/follower commit advances use candidate Save before live publication; injected failure test |
-| Recovery State Reconstruction | Both | Fresh follower state, volatile-role reset, and committed-prefix replay tests |
+| Recovery State Reconstruction | Both | Fresh follower state, snapshot restore, volatile-role reset, and post-snapshot replay tests |
 | LastApplied Recovery | Both | Successful recovery initializes `lastApplied == commitIndex` |
 | Committed State-Machine Replay | Both | Replay uses opaque log commands in index order |
 | Uncommitted Entry Non-Replay | Both | Durable suffix remains in the log but is excluded from recovery replay |
-| Recovery Failure Safety | Both | Apply failure during committed replay rejects initialization |
+| Recovery Failure Safety | Both | Snapshot corruption/restore failure and Apply failure during committed replay reject initialization |
 | Restart Leadership Safety | Both | Restart always reconstructs as follower |
 | Restart Proposal Safety | Enforced by implementation | Proposal waiters are runtime-only and are not persisted |
 | Restart Log Safety | Both | Complete log survives process-independent reopen |
@@ -52,14 +52,14 @@ This document classifies the current election, replication, commitment, and KV s
 | Fault-controller determinism | Enforced + tested | Explicit drop/error/delay/release/partition/heal controls and trace tests |
 | Failure observability | Enforced + tested | Structured fault trace and diagnostic invariant assertions |
 | Partition Safety | Tested under selected deterministic failures | Majority/minority and leader-isolation scenarios; arbitrary combinations remain unestablished |
-| Recovery under injected failure | Tested under selected deterministic failures | Restart, storage, transport, and Apply-failure boundaries are exercised selectively |
+| Recovery under injected failure | Tested under selected deterministic failures | Restart, snapshot storage, transport, snapshot restore, and Apply-failure boundaries are exercised selectively |
 
 ## Raft application invariant
 
 The event loop maintains:
 
 ```text
-lastApplied <= commitIndex <= local lastLogIndex
+`snapshotBoundary <= lastApplied <= commitIndex <= local lastLogIndex`
 ```
 
 Only committed entries are eligible for application. Entries are selected strictly by increasing index. A successful Apply advances `lastApplied` by one entry. A failed Apply leaves the failed entry at `lastApplied+1` and prevents later entries from being applied. An event-loop-owned retry timer eventually schedules another attempt without requiring a new Raft protocol event.
@@ -81,7 +81,7 @@ The in-memory store is expected to be called by the Raft event loop for replicat
 
 ## Committed versus applied
 
-`commitIndex` records consensus commitment. `lastApplied` records successful local application. They are intentionally distinct. A committed entry may remain unapplied when Apply fails. V3 does not persist KV state-machine contents or implement restart replay; that recovery design remains future work.
+`commitIndex` records consensus commitment. `lastApplied` records successful local application. They are intentionally distinct. A committed entry may remain unapplied when Apply fails. V7 additionally permits an applied committed prefix to be represented by an opaque durable snapshot; entries at or below its boundary are not replayed after restart.
 
 ## Existing Raft invariants
 
@@ -117,8 +117,7 @@ V6 does not implement or claim:
 - real networking;
 - WAL replay or segmented WAL;
 - durable KV persistence;
-- durable KV files or snapshot-based recovery;
-- snapshots;
+- durable KV files;
 - ReadIndex;
 - linearizable reads;
 - transactions or exactly-once semantics.

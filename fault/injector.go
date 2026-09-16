@@ -12,8 +12,9 @@ var ErrInjected = errors.New("injected fault")
 type Kind string
 
 const (
-	RequestVote   Kind = "RequestVote"
-	AppendEntries Kind = "AppendEntries"
+	RequestVote     Kind = "RequestVote"
+	AppendEntries   Kind = "AppendEntries"
+	InstallSnapshot Kind = "InstallSnapshot"
 )
 
 type edge struct {

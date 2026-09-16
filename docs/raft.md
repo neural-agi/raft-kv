@@ -1,6 +1,6 @@
 # Raft Protocol and KV Application
 
-The current implementation includes lifecycle, leader election, RequestVote, AppendEntries, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, ordered state-machine application, and the in-process NodeAPI.Propose write path.
+The current implementation includes lifecycle, leader election, RequestVote, AppendEntries, InstallSnapshot, heartbeats, opaque log replication, conflict repair, replication bookkeeping, snapshot compaction, commit-index calculation, ordered state-machine application, and the in-process NodeAPI.Propose write path.
 
 ## Raft/KV boundary
 
@@ -69,18 +69,24 @@ Follower and candidate calls return `ErrCodeNotLeader`. Cancellation affects onl
 
 ## Persistent Raft state
 
-The Storage contract persists the complete `PersistentState`: current term, voted-for identity, and the complete log. V5.1's `storage.FileStorage` uses a versioned binary representation:
+The Storage contract persists the complete `PersistentState`: current term, voted-for identity, compacted boundary metadata, retained log, and commit index. `storage.FileStorage` uses a versioned binary representation:
 
 ```text
 magic(2) | version(1) | reserved(1) |
 currentTerm(8) | votedForLength(4) | votedFor |
-logCount(4) | commitIndex(8) |
+logCount(4) | commitIndex(8) | lastIncludedIndex(8) | lastIncludedTerm(8) |
   repeated: term(8) | index(8) | commandLength(4) | command bytes
 ```
 
 All integers are big-endian. Version 2 includes the durable commit index; version 1 is intentionally rejected rather than silently reinterpreted. The decoder requires exact lengths, validates version, log entry structure, contiguous indexes, commitIndex <= log end, and rejects trailing/corrupt data. A missing state file represents fresh zero state. Save writes and syncs a same-directory temporary file, renames it over the live file, then syncs the parent directory. The returned-success boundary is after these operations; platform/filesystem crash guarantees may vary.
 
-This is complete-state replacement storage, not a WAL. `lastApplied` is not persisted. On restart, the node replays exactly the persisted committed prefix into a fresh in-memory state machine, sets `lastApplied == commitIndex`, and refuses initialization if replay fails. Entries beyond commitIndex remain in the log but are not applied.
+This is complete-state replacement storage, not a WAL. SnapshotStorage separately stores the versioned opaque state-machine image. `lastApplied` is not persisted. On restart, the node restores the snapshot first, then replays only committed retained entries after the snapshot boundary. Entries beyond commitIndex remain in the retained log but are not applied.
+
+## Snapshot and compaction
+
+A snapshot may cover only an applied committed index. The state machine creates opaque bytes, SnapshotStorage durably replaces the snapshot, and Storage then durably records the matching compacted boundary before the live log is replaced. The retained log begins at `lastIncludedIndex+1`; term lookup at the boundary remains available for AppendEntries matching.
+
+When a leader's `nextIndex` falls at or before its compacted boundary, it sends InstallSnapshot. The follower validates the term and metadata, durably saves the snapshot and compacted Raft state, restores the state machine, and then publishes the new event-loop state. Successful installation sets replication progress to the boundary and normal AppendEntries resumes at boundary+1.
 
 ## Existing replication behavior
 

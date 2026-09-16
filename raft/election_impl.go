@@ -35,7 +35,7 @@ func newRuntimeState(node *Node, config Config, persistent PersistentState) (*ru
 	if rng == nil {
 		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
-	log, err := newRaftLog(persistent.Log)
+	log, err := newRaftLog(persistent.SnapshotBoundary, persistent.Log)
 	if err != nil {
 		return nil, err
 	}
