@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-The implementation covers lifecycle, leader election, RequestVote, AppendEntries, InstallSnapshot, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, deterministic in-memory KV state-machine application, snapshots and log compaction, the in-process client write path through NodeAPI.Propose, and filesystem persistence of complete Raft state plus separate snapshots. Restart/recovery restores a snapshot and replays only the committed retained suffix.
+The implementation covers lifecycle, leader election, RequestVote, AppendEntries, InstallSnapshot, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, deterministic in-memory KV state-machine application, snapshots and log compaction, the in-process client write path through NodeAPI.Propose, and filesystem persistence of complete Raft state plus separate snapshots. Restart/recovery restores a snapshot and replays only the committed retained suffix. The `transport` package defines the deterministic wire protocol (versioned framing, battle-tested payload codecs, request IDs), the request/response correlation primitive, and a real TCP client transport and inbound server that speak it: `TCPTransport` implements `raft.Transport` over per-peer sockets and `Server` dispatches decoded requests to the `raft.Node` RPC handlers, so two real nodes replicate over TCP (see `transport/tcp_raft_e2e_test.go`).
 
 ## Package boundaries
 
@@ -11,7 +11,7 @@ cmd/server       process wiring (later)
 cmd/client       process wiring (later)
 cluster          static member identity and configuration
 raft             lifecycle, event loop, elections, log, replication, commitment, apply ordering
-transport        production delivery adapter (not implemented)
+transport        production delivery adapters; wire protocol, correlation, TCP client transport, and inbound RPC server
 storage          filesystem-backed PersistentState and SnapshotStorage; WAL not implemented
 kv               binary commands and in-memory state machine
 fault            deterministic test-only fault controls
@@ -109,7 +109,7 @@ V5.2 persists `currentTerm`, `votedFor`, the complete Raft log, and `commitIndex
 Not implemented in V5.1:
 
 - automatic proposal forwarding or a networked client protocol;
-- real TCP/HTTP/gRPC networking;
+- production networking beyond the TCP transport (HTTP/gRPC wire clients);
 - filesystem WAL;
 - snapshots and compaction;
 - ReadIndex or linearizable reads;

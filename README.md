@@ -388,6 +388,16 @@ Persistent Raft state:
 
 Deterministic failure control used by the test environment.
 
+### `transport/`
+
+Production delivery adapters. The package defines the deterministic wire format
+(versioned framing, payload codecs, request IDs), the request/response
+correlation primitive, and a real TCP client transport + server that speak it.
+`TCPTransport` implements `raft.Transport` over per-peer sockets and `Server`
+dispatches decoded requests to the `raft.Node` RPC handlers, so two nodes
+replicate over TCP with the same semantics `fault.Network` provides. See
+[`docs/transport.md`](docs/transport.md).
+
 ### `integration/`
 
 End-to-end cluster scenarios.
@@ -446,6 +456,8 @@ The project currently has completed milestones covering:
 ✓ snapshots and log compaction
 ✓ three-node benchmark evidence
 ✓ three-node failover demo
+✓ wire protocol and correlation (versioned framing, payload codecs, request IDs)
+✓ TCP transport (real sockets, implements raft.Transport, replication between two nodes)
 ```
 
 The next major engineering milestone is:
@@ -463,6 +475,7 @@ The final polish phase is intended to keep refining benchmark evidence, the fail
 - snapshots and log compaction (state-machine snapshots, compacted log boundaries, snapshot installation for lagging followers, recovery from snapshots)
 - three-node benchmark evidence (in-memory proposal-path throughput, see [`docs/benchmarks.md`](docs/benchmarks.md))
 - three-node failover demo (leader stop, replacement election, restart, catch-up, convergence, see [`scripts/demo-failover.sh`](scripts/demo-failover.sh))
+- wire protocol, correlation, and real TCP transport (versioned framing, payload codecs, request IDs, a `raft.Transport` implementation over per-peer sockets, and an inbound RPC dispatcher, see [`docs/transport.md`](docs/transport.md))
 
 ### Next
 
