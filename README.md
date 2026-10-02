@@ -201,21 +201,66 @@ go test -race -count=20 ./integration
 go test -race -count=20 ./storage
 ```
 
-### Run the cluster
+### Run a real three-process cluster
 
-The repository includes a three-node cluster configuration under:
-
-```text
-configs/three-node.yaml
-```
-
-The project also contains cluster/demo scripts under:
+`cmd/server` runs one cluster node per OS process and `cmd/client` performs a
+single operation. Three example configs are included:
 
 ```text
-scripts/
+configs/node-a.json
+configs/node-b.json
+configs/node-c.json
 ```
 
-Use the scripts and README examples from the repository as the source of truth for the current cluster invocation.
+Build the two binaries and start the three processes:
+
+```bash
+go build -o bin/raft-kv-server ./cmd/server
+go build -o bin/raft-kv-client ./cmd/client
+
+./bin/raft-kv-server -config configs/node-a.json &
+./bin/raft-kv-server -config configs/node-b.json &
+./bin/raft-kv-server -config configs/node-c.json &
+```
+
+Each process prints one manifest line on stdout when it is serving:
+
+```text
+raft-kv node=node-a transport=*transport.TCPTransport raft_listen=127.0.0.1:7001 client_listen=127.0.0.1:7101 ready
+```
+
+Then use the client against any of the three configs:
+
+```bash
+./bin/raft-kv-client -config configs/node-a.json status
+./bin/raft-kv-client -config configs/node-a.json put foo bar
+./bin/raft-kv-client -config configs/node-a.json get foo
+./bin/raft-kv-client -config configs/node-a.json delete foo
+```
+
+`status` prints the role and known leader of every reachable member. `put` and
+`delete` are replicated writes: they return only after the entry is committed and
+applied, following a leader redirect when the member they reach is a follower.
+`get` is a local read from whichever member answers, so it is not linearizable.
+
+Stop a process with `SIGINT` or `SIGTERM` for a clean exit, or kill it to
+simulate a crash; restart it with the same config to recover from its retained
+`storage_dir` and `snapshot_dir`.
+
+### Test the same cluster as real processes
+
+The process-level scenarios build and drive those exact binaries:
+
+```bash
+go test -v ./integration -run '^TestProcess' -count=1
+```
+
+They cover the canonical failover scenario, follower crash and recovery, a leader
+that cannot commit without a majority, a leader frozen with `SIGSTOP` while the
+majority elects a replacement, restart from persisted state, and graceful
+shutdown. See [`docs/failure-scenarios.md`](docs/failure-scenarios.md).
+
+### Deterministic in-process demo
 
 ### Three-node failover demo
 
@@ -328,6 +373,12 @@ The deterministic test infrastructure can exercise scenarios such as:
 | Apply failure | ordered retry and blocked suffix |
 | Restart | persistent-state recovery and state reconstruction |
 
+The same failure classes are also exercised against real OS processes over TCP,
+where the failure is an actual process death, connection refusal, or restart
+rather than an injected message fault. See
+[`docs/failure-scenarios.md`](docs/failure-scenarios.md) for which layer covers
+which failure and why.
+
 The test suite also uses invariant assertions and structured traces so that a failed scenario can be diagnosed rather than merely reported as a generic assertion failure.
 
 More detail is in [`docs/failure-scenarios.md`](docs/failure-scenarios.md).
@@ -398,9 +449,26 @@ dispatches decoded requests to the `raft.Node` RPC handlers, so two nodes
 replicate over TCP with the same semantics `fault.Network` provides. See
 [`docs/transport.md`](docs/transport.md).
 
+### `client/`
+
+The client operation protocol: length-prefixed JSON frames, a TCP client that
+redirects a not-leader rejection to the known leader, and the client listener
+that `cmd/server` exposes. It is separate from the Raft wire protocol, whose
+message-type range is frozen. See [`docs/transport.md`](docs/transport.md).
+
+### `cmd/`
+
+`server` assembles one cluster process from a JSON config: filesystem Raft state
+and snapshot storage, the KV state machine, `TCPTransport` pointed at the
+configured peers, the inbound Raft server, and the client listener. It binds both
+listeners before starting the node, so a port conflict fails fast, and it
+reverses that order on `SIGINT`/`SIGTERM`. `client` is a one-operation CLI.
+
 ### `integration/`
 
-End-to-end cluster scenarios.
+End-to-end cluster scenarios: deterministic in-process ones over `fault.Network`,
+and real multi-process ones that start `cmd/server` processes and drive them over
+TCP.
 
 ### `docs/`
 
@@ -458,6 +526,8 @@ The project currently has completed milestones covering:
 ✓ three-node failover demo
 ✓ wire protocol and correlation (versioned framing, payload codecs, request IDs)
 ✓ TCP transport (real sockets, implements raft.Transport, replication between two nodes)
+✓ multi-process cluster (three OS processes, real TCP between them, client operations)
+✓ process-level failure scenarios (leader crash, follower crash, lost majority, leader partition, restart from persisted state)
 ```
 
 The next major engineering milestone is:
@@ -476,6 +546,8 @@ The final polish phase is intended to keep refining benchmark evidence, the fail
 - three-node benchmark evidence (in-memory proposal-path throughput, see [`docs/benchmarks.md`](docs/benchmarks.md))
 - three-node failover demo (leader stop, replacement election, restart, catch-up, convergence, see [`scripts/demo-failover.sh`](scripts/demo-failover.sh))
 - wire protocol, correlation, and real TCP transport (versioned framing, payload codecs, request IDs, a `raft.Transport` implementation over per-peer sockets, and an inbound RPC dispatcher, see [`docs/transport.md`](docs/transport.md))
+- multi-process cluster (`cmd/server` + `cmd/client` + a small client protocol, three OS processes reaching each other over TCP, see [`docs/architecture.md`](docs/architecture.md))
+- process-level failure scenarios (real kills, a real lost majority, a leader frozen in place, and restart from the persisted log, see [`docs/failure-scenarios.md`](docs/failure-scenarios.md))
 
 ### Next
 

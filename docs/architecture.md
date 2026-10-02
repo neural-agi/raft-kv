@@ -4,18 +4,21 @@
 
 The implementation covers lifecycle, leader election, RequestVote, AppendEntries, InstallSnapshot, heartbeats, opaque log replication, conflict repair, replication bookkeeping, commit-index calculation, deterministic in-memory KV state-machine application, snapshots and log compaction, the in-process client write path through NodeAPI.Propose, and filesystem persistence of complete Raft state plus separate snapshots. Restart/recovery restores a snapshot and replays only the committed retained suffix. The `transport` package defines the deterministic wire protocol (versioned framing, battle-tested payload codecs, request IDs), the request/response correlation primitive, and a real TCP client transport and inbound server that speak it: `TCPTransport` implements `raft.Transport` over per-peer sockets and `Server` dispatches decoded requests to the `raft.Node` RPC handlers, so two real nodes replicate over TCP (see `transport/tcp_raft_e2e_test.go`).
 
+V9.6 adds the process layer. `cmd/server` assembles one node per OS process from a JSON config: filesystem Raft state and snapshot storage, the KV state machine, `TCPTransport` pointed at the configured peers, the inbound Raft `Server`, and a second listener for the client protocol in the `client` package. Three such processes form a cluster in which every inter-node message crosses a socket. `cmd/client` performs one operation (`put`, `get`, `delete`, `status`) per invocation. V9.7 exercises the same binaries under real process failures: kills, graceful stops, restarts on retained directories, and a leader frozen with `SIGSTOP` while the majority elects a replacement (see `integration/process_cluster_v96_test.go` and `integration/process_cluster_v97_test.go`).
+
 ## Package boundaries
 
 ```text
-cmd/server       process wiring (later)
-cmd/client       process wiring (later)
-cluster          static member identity and configuration
+cmd/server       one cluster process: storage, transport, Raft node, client listener, signals
+cmd/client       single-operation client CLI
+cluster          static member identity, in-process config, and process (JSON) config
+client           client protocol codec, TCP client with leader redirect, and client server
 raft             lifecycle, event loop, elections, log, replication, commitment, apply ordering
 transport        production delivery adapters; wire protocol, correlation, TCP client transport, and inbound RPC server
 storage          filesystem-backed PersistentState and SnapshotStorage; WAL not implemented
 kv               binary commands and in-memory state machine
 fault            deterministic test-only fault controls
-integration      future end-to-end tests
+integration      deterministic in-process scenarios and real multi-process scenarios
 docs             contracts and correctness argument
 ```
 
@@ -104,13 +107,22 @@ Follower and candidate proposals return `ErrCodeNotLeader` with the best-known l
 
 V5.2 persists `currentTerm`, `votedFor`, the complete Raft log, and `commitIndex`. `commitIndex` is durable recovery metadata because it identifies exactly which log prefix may be replayed. `lastApplied`, role, leader identity, replication maps, timers, and proposal waiters remain volatile. KV contents remain in memory and are reconstructed by replaying only the persisted committed prefix. A committed-prefix replay failure rejects initialization; uncommitted suffix entries are not replayed.
 
+## Process and client boundary
+
+A process is configured by one JSON file (`cluster.ProcessConfig`, examples in `configs/`). It names the local node ID, the Raft listener, the client listener, the state and snapshot directories, every peer's Raft and client addresses, and optional timing overrides. `raft.Config.Peers` excludes self, so the majority formula stays `len(Peers)+1`; `TCPTransport` receives the same peers mapped to their Raft addresses.
+
+Startup order is bind-then-serve: both listeners bind before the node starts, so a port conflict fails the process immediately instead of leaving a half-running node. Shutdown reverses it. A `SIGINT`/`SIGTERM` cancels the serving context, waits for in-flight handlers, stops the node, and closes the transport, then exits zero.
+
+The client protocol is deliberately not the Raft wire protocol. The Raft message-type range is frozen, and a client operation is not a Raft message, so `client` defines its own length-prefixed JSON frame with `status`, `put`, `get`, and `delete` operations. A `put` or `delete` is encoded as a `kv.Command` and proposed through `NodeAPI.Propose`; a `get` is served from the local `MemoryStore` and is not linearizable. A proposal rejected by a non-leader returns the known leader, and the client redirects to it. Each request to one member is bounded by its own attempt timeout, so an unresponsive member cannot consume the caller's whole operation budget.
+
 ## Deferred behavior
 
-Not implemented in V5.1:
+Not implemented:
 
-- automatic proposal forwarding or a networked client protocol;
+- proposal forwarding inside the server (the client redirects, the server does not);
+- transport encryption or authentication;
 - production networking beyond the TCP transport (HTTP/gRPC wire clients);
 - filesystem WAL;
-- snapshots and compaction;
+- snapshot transfer over the network in the process tests (the code path exists; its end-to-end coverage is not yet written);
 - ReadIndex or linearizable reads;
 - transactions, deduplication, or production fault orchestration.

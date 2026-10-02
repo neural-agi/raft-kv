@@ -1,0 +1,16 @@
+{
+  "node": {
+    "id": "node-a",
+    "listen": "127.0.0.1:7001",
+    "client_listen": "127.0.0.1:7101",
+    "storage_dir": "data/node-a/state",
+    "snapshot_dir": "data/node-a/snapshot"
+  },
+  "peers": [
+    {"id": "node-b", "address": "127.0.0.1:7002", "client_address": "127.0.0.1:7102"},
+    {"id": "node-c", "address": "127.0.0.1:7003", "client_address": "127.0.0.1:7103"}
+  ],
+  "election_timeout_min": "300ms",
+  "election_timeout_max": "600ms",
+  "heartbeat_interval": "50ms"
+}

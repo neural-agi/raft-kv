@@ -10,7 +10,10 @@ replication scenario runs in `transport/tcp_raft_e2e_test.go`.
 
 The framing, payload codecs, malformed-input contract, and request ID semantics
 below are unchanged by the socket additions; `tcp.go` and `server.go` are
-qualified in the final sections.
+qualified in the final sections. The client operation protocol used by
+`cmd/client` and the client listener in `cmd/server` is a separate, deliberately
+small protocol described at the end: it is not a Raft message, so it does not
+extend the frozen message-type range above.
 
 ## Versioning and limits
 
@@ -171,3 +174,34 @@ so the server dispatches to real Raft with no glue.
   a later RPC reconnects.
 - **Write timeout.** `SetWriteTimeout` bounds how long a reply may block on a
   peer that has stopped reading; the connection is dropped when it fires.
+
+## Client protocol (V9.6)
+
+`client` defines the operation protocol that `cmd/client` speaks and that
+`cmd/server` serves. It is intentionally separate from the Raft wire protocol:
+
+- **Why separate.** The Raft frame carries a `MessageType` from a frozen range
+  (`RequestVote` through `SnapshotResponse`) and the header validator rejects
+  anything outside it. A client operation is not a Raft message, has no
+  `raft.NodeID` peer semantics, and must not be able to reach the Raft
+  handlers, so it gets its own framing.
+- **Framing.** One request or response per frame: a 4-byte big-endian payload
+  length followed by a JSON body, capped at 1 MiB. `[]byte` fields are base64 in
+  JSON, so binary KV keys and values round-trip without a second codec.
+- **Operations.** `status` reports the member's role and best-known leader;
+  `put` and `delete` encode a `kv.Command` and propose it through
+  `NodeAPI.Propose`; `get` reads the local `MemoryStore` and is not
+  linearizable.
+- **Redirects.** A proposal rejected by a non-leader is reported as
+  `ok=false` with the leader's `NodeID` (when the node knows one). The client,
+  not the server, follows the redirect: it maps the ID to an address from its own
+  config and retries there. A member never forwards another member's proposal.
+- **Unresponsive members.** Each request to one member is bounded by its own
+  attempt timeout, independent of the overall operation budget. A member that
+  accepts a connection and never answers therefore costs one attempt rather than
+  the whole operation, which is what keeps a client usable while one member of a
+  cluster is frozen or gone.
+- **Concurrency.** The server handles each request on its own goroutine and
+  serializes replies per connection with a mutex, so frames never interleave.
+  `Serve` returns once its context is cancelled and in-flight handlers finish,
+  after closing the listener and every live connection.
