@@ -14,7 +14,7 @@ type clusterNode struct {
 	store *kv.MemoryStore
 }
 
-func newCluster(t *testing.T) []*clusterNode {
+func newCluster(t testing.TB) []*clusterNode {
 	t.Helper()
 	transport := raft.NewMemoryTransport()
 	ids := []raft.NodeID{"a", "b", "c"}
@@ -53,7 +53,7 @@ func (*memoryStorage) Load(context.Context) (raft.PersistentState, error) {
 
 func (*memoryStorage) Save(context.Context, raft.PersistentState) error { return nil }
 
-func waitLeader(t *testing.T, cluster []*clusterNode) *clusterNode {
+func waitLeader(t testing.TB, cluster []*clusterNode) *clusterNode {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {

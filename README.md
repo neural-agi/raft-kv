@@ -217,6 +217,38 @@ scripts/
 
 Use the scripts and README examples from the repository as the source of truth for the current cluster invocation.
 
+### Three-node failover demo
+
+A deterministic, in-process three-node failover walkthrough lives in `TestThreeNodeFailoverDemo` (`integration/demo_test.go`). It starts three nodes, confirms a biased first leader, writes `initial=one` through that leader, stops it, waits for a replacement leader and writes `extra=two` through the replacement, restarts the stopped node on its retained durable state, and waits until all three nodes have applied both writes. Every step is real Raft code with poll-based waits and no sleeps.
+
+```bash
+make demo
+```
+
+or directly:
+
+```bash
+go test -v ./integration -run '^TestThreeNodeFailoverDemo$'
+```
+
+Run it repeatedly (`-count=20`) to watch the deterministic failover and catch-up behavior.
+
+### Three-node PUT benchmark
+
+`BenchmarkThreeNodePUT` (`integration/benchmark_test.go`) measures the real three-node `Node.Propose` path: encode a PUT, replicate, commit, apply, return. It uses in-memory transport and storage, so it measures the Raft code, not a production network or disk durability.
+
+```bash
+make benchmark
+```
+
+or directly:
+
+```bash
+go test -run '^$' -bench '^BenchmarkThreeNodePUT$' -benchmem -benchtime=100ms ./integration
+```
+
+Numbers are environment-specific; see [`docs/benchmarks.md`](docs/benchmarks.md) for methodology and caveats.
+
 ## Example workflow
 
 The intended write path is:
@@ -411,41 +443,36 @@ The project currently has completed milestones covering:
 ✓ durable Raft state
 ✓ restart recovery
 ✓ deterministic fault injection
+✓ snapshots and log compaction
+✓ three-node benchmark evidence
+✓ three-node failover demo
 ```
 
 The next major engineering milestone is:
 
 ```text
-→ snapshotting and log compaction
+→ broader production hardening: streaming witnesses, membership changes, linearizable reads
 ```
 
-The final polish phase is intended to add stronger benchmark evidence, a polished failure demo, and portfolio-oriented documentation.
+The final polish phase is intended to keep refining benchmark evidence, the failure demo, and portfolio-oriented documentation.
 
 ## Roadmap
 
-### Next: snapshots and compaction
+### Delivered
+
+- snapshots and log compaction (state-machine snapshots, compacted log boundaries, snapshot installation for lagging followers, recovery from snapshots)
+- three-node benchmark evidence (in-memory proposal-path throughput, see [`docs/benchmarks.md`](docs/benchmarks.md))
+- three-node failover demo (leader stop, replacement election, restart, catch-up, convergence, see [`scripts/demo-failover.sh`](scripts/demo-failover.sh))
+
+### Next
 
 Planned work includes:
 
-- state-machine snapshots
-- compacted log boundaries
-- snapshot persistence
-- snapshot installation for lagging followers
-- recovery from snapshots
-- adversarial snapshot/failure tests
-
-### Final: benchmarks and demo
-
-Planned final evidence includes:
-
-- throughput and latency measurements
-- recovery timing
-- fault scenario walkthroughs
-- a polished three-node failure demo
-- benchmark methodology
-- final architecture and correctness documentation
-
-These are roadmap items, not current guarantees.
+- membership changes and configuration change safety
+- linearizable (quorum) reads
+- streaming backup witnesses / replica divergence detection
+- broader adversarial and randomized failure testing
+- production-network benchmark methodology (real transport, disk-backed storage)
 
 ## Contributing
 
