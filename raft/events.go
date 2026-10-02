@@ -12,6 +12,7 @@ type nodeEvent interface {
 type stopEvent struct{}
 
 func (stopEvent) handle(s *runtimeState) bool {
+	s.clearActiveReplication()
 	s.completeAllProposals(ErrProposalStopped)
 	return true
 }
@@ -192,10 +193,11 @@ func (e appendEntriesEvent) handle(s *runtimeState) bool {
 }
 
 type appendEntriesReplyEvent struct {
-	target     NodeID
-	leaderTerm Term
-	request    AppendEntriesArgs
-	reply      AppendEntriesReply
+	target  NodeID
+	request replicationRequest
+	entries AppendEntriesArgs
+	reply   AppendEntriesReply
+	err     error
 }
 
 func (e appendEntriesReplyEvent) handle(s *runtimeState) bool {

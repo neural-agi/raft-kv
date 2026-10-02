@@ -2,46 +2,57 @@ package raft
 
 import "context"
 
+type replicationKind uint8
+
+const (
+	replicationAppend replicationKind = iota + 1
+	replicationSnapshot
+)
+
+type replicationRequest struct {
+	generation uint64
+	kind       replicationKind
+	term       Term
+	index      LogIndex
+}
+
+func (s *runtimeState) beginReplication(peer NodeID, kind replicationKind, term Term, index LogIndex) (replicationRequest, bool) {
+	if _, ok := s.replication[peer]; ok {
+		return replicationRequest{}, false
+	}
+	s.nextReplication++
+	request := replicationRequest{generation: s.nextReplication, kind: kind, term: term, index: index}
+	s.replication[peer] = request
+	return request, true
+}
+
+func (s *runtimeState) finishReplication(peer NodeID, request replicationRequest) bool {
+	active, ok := s.replication[peer]
+	if !ok || active != request {
+		return false
+	}
+	delete(s.replication, peer)
+	return true
+}
+
+// clearActiveReplication releases every outstanding per-peer replication
+// request. It is event-loop owned and must be called whenever this node stops
+// leading, so that the next leadership tenure starts with no occupied slot.
+// Completions belonging to a discarded request are rejected by generation
+// matching, because generations are never reused.
+func (s *runtimeState) clearActiveReplication() {
+	clear(s.replication)
+}
+
 func (s *runtimeState) sendAppendEntries() {
 	if s.role != Leader {
 		return
 	}
-	term := s.persistent.CurrentTerm
 	for _, peer := range s.config.Peers {
 		if peer == s.config.ID {
 			continue
 		}
-		next := s.nextIndex[peer]
-		if next <= s.log.boundary.Index {
-			if send, ok := s.snapshotRequest(); ok {
-				go s.requestInstallSnapshot(peer, s.persistent.CurrentTerm, send)
-			}
-			continue
-		}
-		prevIndex := LogIndex(0)
-		prevTerm := Term(0)
-		if next > 0 {
-			prevIndex = next - 1
-			if termAt, ok := s.log.term(prevIndex); ok {
-				prevTerm = termAt
-			}
-		}
-		entries := make([]LogEntry, 0)
-		for index := next; index <= s.log.lastIndex(); index++ {
-			entry, ok := s.log.entry(index)
-			if ok {
-				entries = append(entries, entry)
-			}
-		}
-		request := AppendEntriesArgs{
-			Term:         term,
-			LeaderID:     s.config.ID,
-			PrevLogIndex: prevIndex,
-			PrevLogTerm:  prevTerm,
-			Entries:      entries,
-			LeaderCommit: s.commitIndex,
-		}
-		go s.requestAppendEntries(peer, term, request)
+		s.sendAppendEntriesTo(peer)
 	}
 }
 
@@ -62,20 +73,30 @@ func (s *runtimeState) snapshotRequest() (InstallSnapshotArgs, bool) {
 	}, true
 }
 
-func (s *runtimeState) requestInstallSnapshot(target NodeID, term Term, request InstallSnapshotArgs) {
-	reply, err := s.config.Transport.InstallSnapshot(context.Background(), target, request)
-	if err != nil {
+func (s *runtimeState) sendSnapshot(target NodeID) {
+	request, ok := s.snapshotRequest()
+	if !ok {
 		return
 	}
-	s.node.enqueueBackground(installSnapshotReplyEvent{target: target, leaderTerm: term, request: request, reply: reply})
+	transfer, ok := s.beginReplication(target, replicationSnapshot, request.Term, request.LastIncludedIndex)
+	if !ok {
+		return
+	}
+	go s.requestInstallSnapshot(target, transfer, request)
 }
 
-func (s *runtimeState) requestAppendEntries(target NodeID, term Term, request AppendEntriesArgs) {
-	reply, err := s.config.Transport.AppendEntries(context.Background(), target, request)
-	if err != nil {
-		return
-	}
-	s.node.enqueueBackground(appendEntriesReplyEvent{target: target, leaderTerm: term, request: request, reply: reply})
+func (s *runtimeState) requestInstallSnapshot(target NodeID, transfer replicationRequest, request InstallSnapshotArgs) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.config.ReplicationTimeout)
+	defer cancel()
+	reply, err := s.config.Transport.InstallSnapshot(ctx, target, request)
+	s.node.enqueueCompletion(installSnapshotReplyEvent{target: target, request: transfer, reply: reply, err: err})
+}
+
+func (s *runtimeState) requestAppendEntries(target NodeID, transfer replicationRequest, request AppendEntriesArgs) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.config.ReplicationTimeout)
+	defer cancel()
+	reply, err := s.config.Transport.AppendEntries(ctx, target, request)
+	s.node.enqueueCompletion(appendEntriesReplyEvent{target: target, request: transfer, entries: request, reply: reply, err: err})
 }
 
 func (s *runtimeState) handleInstallSnapshot(request InstallSnapshotArgs) (InstallSnapshotReply, bool) {
@@ -149,6 +170,7 @@ func (s *runtimeState) handleAppendEntries(request AppendEntriesArgs) AppendEntr
 	if request.Term == s.persistent.CurrentTerm {
 		if s.role != Follower {
 			s.role = Follower
+			s.clearActiveReplication()
 			s.invalidateLostProposals()
 			s.electionTerm = 0
 			s.votes = nil
@@ -201,15 +223,31 @@ func (s *runtimeState) handleAppendEntries(request AppendEntriesArgs) AppendEntr
 }
 
 func (s *runtimeState) handleAppendEntriesReply(event appendEntriesReplyEvent) {
+	if !s.finishReplication(event.target, event.request) {
+		return
+	}
+	if event.err != nil {
+		// The attempt never produced a reply, so this peer learned nothing about
+		// its log. Release the slot (done above) and back nextIndex off by one so
+		// the next heartbeat probes from a shorter prefix. Without this the peer
+		// would be retried with the identical request forever and could never
+		// converge once the transport recovered. The retry is deliberately left
+		// to the heartbeat rather than dispatched here, so a persistently failing
+		// peer cannot spin the event loop.
+		if s.role == Leader && event.request.term == s.persistent.CurrentTerm {
+			s.backOffNextIndex(event.target)
+		}
+		return
+	}
 	if event.reply.Term > s.persistent.CurrentTerm {
 		_ = s.updateTerm(event.reply.Term)
 		return
 	}
-	if s.role != Leader || event.leaderTerm != s.persistent.CurrentTerm || event.reply.Term != event.leaderTerm {
+	if s.role != Leader || event.request.term != s.persistent.CurrentTerm || event.reply.Term != event.request.term {
 		return
 	}
 	if event.reply.Success {
-		lastSent := event.request.PrevLogIndex + LogIndex(len(event.request.Entries))
+		lastSent := event.entries.PrevLogIndex + LogIndex(len(event.entries.Entries))
 		if lastSent > s.matchIndex[event.target] {
 			s.matchIndex[event.target] = lastSent
 		}
@@ -219,12 +257,16 @@ func (s *runtimeState) handleAppendEntriesReply(event appendEntriesReplyEvent) {
 		s.advanceCommitIndex()
 		return
 	}
-	if s.nextIndex[event.target] > 1 {
-		s.nextIndex[event.target]--
-	} else {
-		s.nextIndex[event.target] = 1
-	}
+	s.backOffNextIndex(event.target)
 	s.sendAppendEntriesTo(event.target)
+}
+
+func (s *runtimeState) backOffNextIndex(peer NodeID) {
+	if s.nextIndex[peer] > 1 {
+		s.nextIndex[peer]--
+	} else {
+		s.nextIndex[peer] = 1
+	}
 }
 
 func (s *runtimeState) sendAppendEntriesTo(peer NodeID) {
@@ -233,13 +275,17 @@ func (s *runtimeState) sendAppendEntriesTo(peer NodeID) {
 	}
 	next := s.nextIndex[peer]
 	if next <= s.log.boundary.Index {
-		if request, ok := s.snapshotRequest(); ok {
-			go s.requestInstallSnapshot(peer, s.persistent.CurrentTerm, request)
-		}
+		s.sendSnapshot(peer)
 		return
 	}
-	prevIndex := next - 1
-	prevTerm, _ := s.log.term(prevIndex)
+	prevIndex := LogIndex(0)
+	prevTerm := Term(0)
+	if next > 0 {
+		prevIndex = next - 1
+		if termAt, ok := s.log.term(prevIndex); ok {
+			prevTerm = termAt
+		}
+	}
 	entries := make([]LogEntry, 0)
 	for index := next; index <= s.log.lastIndex(); index++ {
 		entry, ok := s.log.entry(index)
@@ -248,7 +294,11 @@ func (s *runtimeState) sendAppendEntriesTo(peer NodeID) {
 		}
 	}
 	request := AppendEntriesArgs{Term: s.persistent.CurrentTerm, LeaderID: s.config.ID, PrevLogIndex: prevIndex, PrevLogTerm: prevTerm, Entries: entries, LeaderCommit: s.commitIndex}
-	go s.requestAppendEntries(peer, s.persistent.CurrentTerm, request)
+	transfer, ok := s.beginReplication(peer, replicationAppend, request.Term, prevIndex+LogIndex(len(entries)))
+	if !ok {
+		return
+	}
+	go s.requestAppendEntries(peer, transfer, request)
 }
 
 func (s *runtimeState) advanceCommitIndex() {
@@ -271,25 +321,32 @@ func (s *runtimeState) advanceCommitIndex() {
 }
 
 type installSnapshotReplyEvent struct {
-	target     NodeID
-	leaderTerm Term
-	request    InstallSnapshotArgs
-	reply      InstallSnapshotReply
+	target  NodeID
+	request replicationRequest
+	reply   InstallSnapshotReply
+	err     error
 }
 
 func (e installSnapshotReplyEvent) handle(s *runtimeState) bool {
+	if !s.finishReplication(e.target, e.request) {
+		return false
+	}
+	if e.err != nil {
+		return false
+	}
 	if e.reply.Term > s.persistent.CurrentTerm {
 		_ = s.updateTerm(e.reply.Term)
 		return false
 	}
-	if s.role != Leader || e.leaderTerm != s.persistent.CurrentTerm || e.reply.Term != e.leaderTerm {
+	if s.role != Leader || e.request.kind != replicationSnapshot || e.request.term != s.persistent.CurrentTerm || e.reply.Term != e.request.term {
 		return false
 	}
-	if e.request.LastIncludedIndex >= s.nextIndex[e.target] {
-		s.matchIndex[e.target] = e.request.LastIncludedIndex
-		s.nextIndex[e.target] = e.request.LastIncludedIndex + 1
-		s.sendAppendEntriesTo(e.target)
+	if e.request.index < s.nextIndex[e.target] {
+		return false
 	}
+	s.matchIndex[e.target] = e.request.index
+	s.nextIndex[e.target] = e.request.index + 1
+	s.sendAppendEntriesTo(e.target)
 	return false
 }
 

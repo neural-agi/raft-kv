@@ -27,23 +27,32 @@ func TestHeartbeatAndStaleAppendEntries(t *testing.T) {
 	}
 }
 
+// TestHigherTermAppendEntriesReplyStepsDown delivers a higher-term reply for a
+// request the event loop actually issued, and checks that the leader steps down
+// and drops its replication state.
 func TestHigherTermAppendEntriesReplyStepsDown(t *testing.T) {
-	transport := NewMemoryTransport()
-	node, _ := nodeWithState(t, "a", []NodeID{"b", "c"}, PersistentState{CurrentTerm: 1}, transport)
-	if err := node.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = node.Stop(context.Background()) }()
+	gated := newGatedTransport()
+	arrived := gated.BlockAppend(1)
+	storage := &testStorage{state: PersistentState{CurrentTerm: 1, Log: []LogEntry{{Term: 1, Index: 1}}}}
+	node := lifecycleNode(t, "a", []NodeID{"b"}, storage, gated, NewTestStateMachine(), nil, time.Second)
+	gated.Connect("b", lifecyclePeer(t, "b", []NodeID{"a"}, &testStorage{state: PersistentState{CurrentTerm: 1}}, gated, NewTestStateMachine(), nil, time.Second))
 	if err := triggerBecomeLeaderForTest(node, context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := node.enqueue(context.Background(), appendEntriesReplyEvent{target: "b", leaderTerm: 2, reply: AppendEntriesReply{Term: 3}}); err != nil {
+	select {
+	case <-arrived:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no AppendEntries call reached the transport")
+	}
+	active := waitActiveReplication(t, node, "b")
+	if err := node.enqueue(context.Background(), appendEntriesReplyEvent{target: "b", request: active, reply: AppendEntriesReply{Term: 3}}); err != nil {
 		t.Fatal(err)
 	}
 	state, err := node.DebugState(context.Background())
 	if err != nil || state.Role != Follower || state.Term != 3 {
 		t.Fatalf("higher-term reply state = %#v, %v", state, err)
 	}
+	waitNoActiveReplication(t, node, "b")
 }
 
 func TestHeartbeatStopsAndFollowerCanTimeOut(t *testing.T) {

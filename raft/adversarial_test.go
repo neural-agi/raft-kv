@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestAppendEntriesExactConflictReplacement(t *testing.T) {
@@ -44,39 +45,59 @@ func TestStaleAppendEntriesDoesNotRecordLeader(t *testing.T) {
 	}
 }
 
+// TestStaleReplicationFailureDoesNotRollbackProgress exercises the real
+// replication flow: the follower rejects until the leader walks nextIndex down,
+// then accepts. A late failure carrying an already-completed request identity
+// must not roll that progress back.
 func TestStaleReplicationFailureDoesNotRollbackProgress(t *testing.T) {
-	transport := NewMemoryTransport()
-	node := auditNode(t, "l", []NodeID{"f"}, &testStorage{state: PersistentState{CurrentTerm: 1, Log: []LogEntry{{Term: 1, Index: 1}, {Term: 1, Index: 2}}}}, transport)
+	gated := newGatedTransport()
+	arrived := gated.BlockAppend(1)
+	storage := &testStorage{state: PersistentState{CurrentTerm: 1, Log: []LogEntry{{Term: 1, Index: 1}, {Term: 1, Index: 2}}}}
+	node := lifecycleNode(t, "l", []NodeID{"f"}, storage, gated, NewTestStateMachine(), nil, time.Second)
+	follower := lifecyclePeer(t, "f", []NodeID{"l"}, &testStorage{state: PersistentState{CurrentTerm: 1}}, gated, NewTestStateMachine(), nil, time.Second)
+	gated.Connect("l", node)
+	gated.Connect("f", follower)
 	if err := triggerBecomeLeaderForTest(node, context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := node.enqueue(context.Background(), appendEntriesReplyEvent{target: "f", leaderTerm: 2, request: AppendEntriesArgs{Term: 2, PrevLogIndex: 0, Entries: []LogEntry{{Term: 2, Index: 1}}}, reply: AppendEntriesReply{Term: 2, Success: true}}); err != nil {
-		t.Fatal(err)
+	select {
+	case <-arrived:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no AppendEntries call reached the transport")
 	}
-	if err := node.enqueue(context.Background(), appendEntriesReplyEvent{target: "f", leaderTerm: 2, request: AppendEntriesArgs{Term: 2, PrevLogIndex: 0}, reply: AppendEntriesReply{Term: 2, Success: false}}); err != nil {
+	stale := waitActiveReplication(t, node, "f")
+	staleArgs := gated.Append()
+	gated.ReleaseAppend()
+	waitFor(t, "replication to converge", func() bool {
+		state, err := node.DebugState(context.Background())
+		return err == nil && state.MatchIndex["f"] == 2 && state.NextIndex["f"] == 3
+	})
+	if err := node.enqueue(context.Background(), appendEntriesReplyEvent{target: "f", request: stale, entries: staleArgs, reply: AppendEntriesReply{Term: stale.term, Success: false}}); err != nil {
 		t.Fatal(err)
 	}
 	state, err := node.DebugState(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.MatchIndex["f"] != 1 || state.NextIndex["f"] < 2 {
+	if state.MatchIndex["f"] != 2 || state.NextIndex["f"] < 3 {
 		t.Fatalf("stale failure rolled back progress: %#v", state)
 	}
 }
 
+// TestCommitPrefixAfterCurrentTermEntry replicates an entry committed in the
+// current term against a real follower and checks that commitment of that entry
+// also commits the preceding entry from an older term.
 func TestCommitPrefixAfterCurrentTermEntry(t *testing.T) {
-	transport := NewMemoryTransport()
+	gated := newGatedTransport()
 	storage := &testStorage{state: PersistentState{CurrentTerm: 2, Log: []LogEntry{{Term: 1, Index: 1, Command: []byte("a")}, {Term: 3, Index: 2, Command: []byte("b")}}}}
-	node := auditNode(t, "l", []NodeID{"f", "g"}, storage, transport)
+	node := lifecycleNode(t, "l", []NodeID{"f", "g"}, storage, gated, NewTestStateMachine(), nil, time.Second)
+	gated.Connect("f", lifecyclePeer(t, "f", []NodeID{"l"}, &testStorage{state: PersistentState{CurrentTerm: 2}}, gated, NewTestStateMachine(), nil, time.Second))
+	gated.Connect("g", lifecyclePeer(t, "g", []NodeID{"l"}, &testStorage{state: PersistentState{CurrentTerm: 2}}, gated, NewTestStateMachine(), nil, time.Second))
 	if err := triggerBecomeLeaderForTest(node, context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := node.enqueue(context.Background(), appendEntriesReplyEvent{target: "f", leaderTerm: 3, request: AppendEntriesArgs{Term: 3, PrevLogIndex: 1, Entries: []LogEntry{{Term: 3, Index: 2}}}, reply: AppendEntriesReply{Term: 3, Success: true}}); err != nil {
-		t.Fatal(err)
-	}
-	state, err := node.DebugState(context.Background())
-	if err != nil || state.CommitIndex != 2 {
-		t.Fatalf("current-term entry did not commit prefix: %#v, %v", state, err)
-	}
+	waitFor(t, "current-term entry to commit", func() bool {
+		state, err := node.DebugState(context.Background())
+		return err == nil && state.MatchIndex["f"] == 2 && state.CommitIndex == 2
+	})
 }

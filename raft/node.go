@@ -15,6 +15,13 @@ var (
 	ErrAlreadyStopped = errors.New("raft node already stopped")
 )
 
+// defaultReplicationTimeout bounds a single leader->peer replication attempt.
+// Every attempt must terminate: the transport call is cancelled once it
+// elapses, the attempt reports an error, and the per-peer slot is released so
+// the next heartbeat can retry. Without a bound, one undeliverable request
+// would occupy its peer's slot forever.
+const defaultReplicationTimeout = 10 * time.Second
+
 // Config contains the dependencies and timing policy for a Raft node.
 type Config struct {
 	ID                 NodeID
@@ -25,6 +32,7 @@ type Config struct {
 	ElectionTimeoutMax time.Duration
 	HeartbeatInterval  time.Duration
 	ApplyRetryInterval time.Duration
+	ReplicationTimeout time.Duration
 	Random             *rand.Rand
 	StateMachine       StateMachine
 	SnapshotStorage    SnapshotStorage
@@ -59,6 +67,9 @@ func NewNode(config Config) (*Node, error) {
 	}
 	if config.ApplyRetryInterval <= 0 {
 		config.ApplyRetryInterval = config.HeartbeatInterval
+	}
+	if config.ReplicationTimeout <= 0 {
+		config.ReplicationTimeout = defaultReplicationTimeout
 	}
 	if config.StateMachine == nil {
 		return nil, errors.New("raft state machine is required")
@@ -210,6 +221,25 @@ func (n *Node) enqueueBackground(event nodeEvent) {
 	}
 }
 
+// enqueueCompletion delivers a replication completion to the event loop without
+// discarding it. Discarding a completion would leave the peer's replication slot
+// occupied forever, because the slot is only released by the completion itself.
+// It blocks until the event is accepted or the node stops; at most one such
+// goroutine exists per peer, so the wait is bounded by the peer count.
+func (n *Node) enqueueCompletion(event nodeEvent) {
+	n.mu.Lock()
+	if n.lifecycle != Running {
+		n.mu.Unlock()
+		return
+	}
+	events := n.events
+	n.mu.Unlock()
+	select {
+	case events <- event:
+	case <-n.done:
+	}
+}
+
 func (n *Node) enqueue(ctx context.Context, event nodeEvent) error {
 	n.mu.Lock()
 	if n.lifecycle != Running {
@@ -267,15 +297,37 @@ func (n *Node) run() {
 			applyRetryTimer.Reset(state.config.ApplyRetryInterval)
 		}
 	}
-	resetHeartbeat := func() {
+	// The heartbeat is armed only when leadership starts and re-arms itself on
+	// each expiry, so it keeps a fixed cadence regardless of how many events the
+	// loop is processing. Re-arming on every event would let a busy event
+	// stream (a client proposal or replication reply arriving faster than
+	// HeartbeatInterval) starve the timer indefinitely, and a leader that stops
+	// heartbeating strands every peer it can no longer reach.
+	heartbeatArmed := false
+	armHeartbeat := func() {
+		if heartbeatArmed {
+			return
+		}
+		heartbeatTimer.Reset(state.nextHeartbeatTimeout())
+		heartbeatArmed = true
+	}
+	disarmHeartbeat := func() {
+		if !heartbeatArmed {
+			return
+		}
 		if !heartbeatTimer.Stop() {
 			select {
 			case <-heartbeatTimer.C:
 			default:
 			}
 		}
+		heartbeatArmed = false
+	}
+	trackLeadership := func() {
 		if state.role == Leader {
-			heartbeatTimer.Reset(state.nextHeartbeatTimeout())
+			armHeartbeat()
+		} else {
+			disarmHeartbeat()
 		}
 	}
 	defer close(n.done)
@@ -285,6 +337,8 @@ func (n *Node) run() {
 		n.mu.Unlock()
 	}()
 
+	trackLeadership()
+
 	for {
 		select {
 		case <-electionTimer.C:
@@ -293,16 +347,15 @@ func (n *Node) run() {
 				state.resetElectionTimer = false
 				resetElection()
 			}
-			if state.role == Leader {
-				resetHeartbeat()
-			}
+			trackLeadership()
 		case <-applyRetryTimer.C:
 			state.applyCommitted()
 			resetApplyRetry()
 		case <-heartbeatTimer.C:
+			heartbeatArmed = false
 			if state.role == Leader {
 				state.sendAppendEntries()
-				resetHeartbeat()
+				armHeartbeat()
 			}
 		case event := <-n.events:
 			if event.handle(state) {
@@ -314,9 +367,7 @@ func (n *Node) run() {
 				state.resetElectionTimer = false
 				resetElection()
 			}
-			if state.role == Leader {
-				resetHeartbeat()
-			}
+			trackLeadership()
 		}
 	}
 }

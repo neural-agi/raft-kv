@@ -127,15 +127,21 @@ func waitV7(t *testing.T, node *raft.Node, check func(raft.DebugState) bool) raf
 	defer ticker.Stop()
 	timeout := time.NewTimer(5 * time.Second)
 	defer timeout.Stop()
+	last := raft.DebugState{}
 	for {
 		select {
 		case <-ticker.C:
-			state, err := node.DebugState(context.Background())
-			if err == nil && check(state) {
-				return state
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			state, err := node.DebugState(ctx)
+			cancel()
+			if err == nil {
+				last = state
+				if check(state) {
+					return state
+				}
 			}
 		case <-timeout.C:
-			t.Fatal("timed out waiting for V7 state")
+			t.Fatalf("timed out waiting for V7 state; last=%#v", last)
 		}
 	}
 }

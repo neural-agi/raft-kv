@@ -17,8 +17,10 @@ type runtimeState struct {
 	commitIndex LogIndex
 	lastApplied LogIndex
 
-	nextIndex  map[NodeID]LogIndex
-	matchIndex map[NodeID]LogIndex
+	nextIndex       map[NodeID]LogIndex
+	matchIndex      map[NodeID]LogIndex
+	replication     map[NodeID]replicationRequest
+	nextReplication uint64
 
 	electionTerm       Term
 	votes              map[NodeID]struct{}
@@ -50,6 +52,7 @@ func newRuntimeState(node *Node, config Config, persistent PersistentState) (*ru
 		random:       rng,
 		proposals:    make(map[LogIndex]*proposalWaiter),
 		applyResults: make(map[LogIndex][]byte),
+		replication:  make(map[NodeID]replicationRequest),
 	}, nil
 }
 
@@ -112,6 +115,7 @@ func (s *runtimeState) hasMajority() bool {
 func (s *runtimeState) becomeLeader() {
 	s.role = Leader
 	s.leaderID = s.config.ID
+	s.clearActiveReplication()
 	s.nextIndex = make(map[NodeID]LogIndex, len(s.config.Peers))
 	s.matchIndex = make(map[NodeID]LogIndex, len(s.config.Peers))
 	lastIndex := s.log.lastIndex()
@@ -146,6 +150,7 @@ func (s *runtimeState) handleVoteRequest(request RequestVoteArgs) RequestVoteRep
 		s.persistent = candidate
 		s.role = Follower
 		s.leaderID = ""
+		s.clearActiveReplication()
 		s.invalidateLostProposals()
 		s.resetElectionTimer = true
 		reply.VoteGranted = true
@@ -166,6 +171,7 @@ func (s *runtimeState) updateTerm(term Term) error {
 	s.persistent = candidate
 	s.role = Follower
 	s.leaderID = ""
+	s.clearActiveReplication()
 	s.invalidateLostProposals()
 	s.electionTerm = 0
 	s.votes = nil
